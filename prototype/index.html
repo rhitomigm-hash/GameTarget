@@ -92,6 +92,11 @@
     background: #2e6da4; color: #fff; font-size: 14px; cursor: pointer;
   }
   .howto-try-btn:hover { background: #3a80bd; }
+  .howto-dev-btn {
+    margin-top: 8px; width: 100%; padding: 10px 0; border: 1px dashed #8a6a2a; border-radius: 6px;
+    background: rgba(255, 193, 7, 0.12); color: #ffca5b; font-size: 14px; cursor: pointer;
+  }
+  .howto-dev-btn:hover { background: rgba(255, 193, 7, 0.22); }
   .howto-close-btn {
     margin-top: 16px; width: 100%; padding: 10px 0; border: 0; border-radius: 6px;
     background: #33414f; color: #e8f0f6; font-size: 14px; cursor: pointer;
@@ -182,7 +187,7 @@
   #loading .logo { font-size: 40px; font-weight: bold; letter-spacing: 6px; color: #9ecfff; }
   #loading .tagline { font-size: 14px; color: #cdd9e4; margin-bottom: 8px; }
   #loading .p { font-family: Consolas, monospace; color: #9ecfff; }
-  #briefing, #areasel, #address-map-overlay, #howto-overlay, #setup-overlay {
+  #briefing, #dev-briefing, #areasel, #address-map-overlay, #howto-overlay, #setup-overlay {
     position: fixed; inset: 0; z-index: 10;
     display: flex; align-items: center; justify-content: center;
     background: rgba(8, 14, 20, 0.9);
@@ -235,18 +240,47 @@
   }
   .wind-tools select { flex: 1; }
   .b-hint { margin-top: 12px; font-size: 12px; color: #cdd9e4; line-height: 1.7; }
-  #launch-btn {
+  #launch-btn, #launch-btn-dev {
     margin-top: 16px; width: 100%; padding: 11px 0; border: 0; border-radius: 6px;
     background: #2e6da4; color: #fff; font-size: 15px; cursor: pointer;
   }
-  #launch-btn:disabled { background: #33414f; color: #8a99a8; cursor: default; }
-  #launch-btn:not(:disabled):hover { background: #3a80bd; }
-  #launch-map {
+  #launch-btn:disabled, #launch-btn-dev:disabled { background: #33414f; color: #8a99a8; cursor: default; }
+  #launch-btn:not(:disabled):hover, #launch-btn-dev:not(:disabled):hover { background: #3a80bd; }
+  #launch-map, #launch-map-dev {
     width: min(80vh, 60vw); height: min(80vh, 60vw);
     border: 1px solid #345a7a; border-radius: 4px; cursor: crosshair; display: block;
     touch-action: none;
   }
   .mapnote { font-size: 11px; color: #9ab; margin-top: 6px; }
+  .b-pressure { margin-top: 18px; border-top: 1px solid #2a3d52; padding-top: 14px; }
+  .pressure-tools { display: flex; gap: 8px; margin: 8px 0 10px; flex-wrap: wrap; align-items: center; }
+  .pmode-btn {
+    padding: 8px 14px; border-radius: 6px; border: 1px solid #345a7a; cursor: pointer;
+    background: #16232f; color: #cdd; font-size: 13px;
+  }
+  .pmode-btn.pmode-h.active { background: #7a2020; border-color: #d84040; color: #fff; }
+  .pmode-btn.pmode-l.active { background: #1e3f7a; border-color: #4088e0; color: #fff; }
+  .pmode-clear { padding: 8px 14px; border-radius: 6px; border: 1px solid #4a3520; cursor: pointer;
+    background: #16232f; color: #cba; font-size: 13px; }
+  .pressure-ref-btn {
+    padding: 8px 14px; border-radius: 6px; border: 1px solid #345a7a; cursor: pointer;
+    background: #16232f; color: #9ecfff; font-size: 13px;
+  }
+  .pressure-row { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-start; }
+  .pressure-col { flex: 1 1 380px; min-width: 300px; }
+  #pressure-map-dev {
+    width: 100%; max-width: 560px; height: auto; display: block;
+    border: 1px solid #345a7a; border-radius: 4px; cursor: crosshair;
+  }
+  .pressure-table { margin-top: 10px; width: 100%; max-width: 560px; }
+  .pressure-table th, .pressure-table td { text-align: center; }
+  .pressure-table input { width: 52px; }
+  .pressure-ref-note { color: #9ecfff; font-size: 13px; margin-bottom: 6px; }
+  .pressure-ref-img { max-width: 100%; max-height: 420px; border: 1px solid #345a7a; border-radius: 4px; display: block; }
+  .pressure-ref-placeholder {
+    max-width: 100%; height: 240px; border: 1px dashed #345a7a; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center; color: #6a8; font-size: 12px;
+  }
 </style>
 </head>
 <body>
@@ -312,6 +346,75 @@
         <canvas id="launch-map" width="1280" height="1280"></canvas>
         <div class="mapnote">地理院タイル(標準地図)/ 北が上 / クリック: 離陸地点を選択 / ホイール: 拡大縮小 / ドラッグ: 移動</div>
         <button id="launch-btn" disabled>地図で離陸地点を選択してください</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 開発途中版(?dev=1)専用のブリーフィング。#briefing とは別要素・別IDで完全に切り離す
+     (GameTargetで検討中の新機能はこちらに追加していく。安定版の #briefing は変更しない) -->
+<div id="dev-briefing" style="display:none">
+  <div class="b-panel">
+    <div class="b-title" id="dev-briefing-title">タスクブリーフィング(開発途中版)</div>
+    <div class="b-cols">
+      <div class="b-left">
+        <table class="tasksheet">
+          <tr><th>競技</th><td>JDG(ジャッジ・ディクレアード・ゴール)</td></tr>
+          <tr><th>ターゲット</th><td>地図上の橙色X</td></tr>
+          <tr><th>離陸</th><td>個別離陸(地図をクリックして選択)</td></tr>
+          <tr><th>制限時間</th><td>30:00(ゲーム内時間)</td></tr>
+          <tr><th>マーカー</th><td>1本(Mキーで投下)</td></tr>
+          <tr><th>スコア</th><td>マーカー着地点〜ターゲット中心の距離</td></tr>
+        </table>
+        <div class="b-sub">パイバル観測データ(編集できます)</div>
+        <div class="wind-tools">
+          <select id="wind-preset-dev"></select>
+          <button id="wind-add-dev" type="button">+行</button>
+          <button id="wind-copy-dev" type="button">条件URLをコピー</button>
+        </div>
+        <table class="b-pibal">
+          <thead><tr><th>高度ft</th><th>風向°</th><th>風速kt</th><th></th></tr></thead>
+          <tbody id="wind-editor-dev"></tbody>
+        </table>
+        <div class="b-hint">
+          風向はFROM(磁方位)。表は編集でき、プリセット選択・行の追加削除も可能です。<br>
+          ターゲットの風上側に離陸地点を取り、高度で風を乗り換えて狙いましょう。<br>
+          「条件URLをコピー」で、この風と同じ条件に挑戦できるURLを共有できます。<br>
+          <b style="color:#ffca5b;">※ 開発途中版です。新機能(気圧配置モデル等)は今後ここに追加されます。</b>
+        </div>
+      </div>
+      <div class="b-right">
+        <canvas id="launch-map-dev" width="1280" height="1280"></canvas>
+        <div class="mapnote">地理院タイル(標準地図)/ 北が上 / クリック: 離陸地点を選択 / ホイール: 拡大縮小 / ドラッグ: 移動</div>
+        <button id="launch-btn-dev" disabled>地図で離陸地点を選択してください</button>
+      </div>
+    </div>
+
+    <div class="b-pressure">
+      <div class="b-sub">気圧配置(H・L) — 実験中(まだ風の計算はしません。位置と気圧値を入力するだけです)</div>
+      <div class="pressure-tools">
+        <button id="pressure-mode-h" type="button" class="pmode-btn pmode-h active">高気圧(H)を置く</button>
+        <button id="pressure-mode-l" type="button" class="pmode-btn pmode-l">低気圧(L)を置く</button>
+        <button id="pressure-clear" type="button" class="pmode-clear">クリア</button>
+        <label class="pressure-ref-btn">
+          参考天気図を読み込む
+          <input type="file" id="pressure-ref-input" accept="image/*" style="display:none">
+        </label>
+      </div>
+      <div class="pressure-row">
+        <div class="pressure-col">
+          <canvas id="pressure-map-dev" width="1280" height="960"></canvas>
+          <div class="mapnote">クリックで、選択中(H/L)の点を置きます(それぞれ最大5個)</div>
+          <table class="b-pibal pressure-table">
+            <thead><tr><th>種別</th><th>緯度</th><th>経度</th><th>気圧hPa</th><th></th></tr></thead>
+            <tbody id="pressure-editor-dev"></tbody>
+          </table>
+        </div>
+        <div class="pressure-col">
+          <div class="pressure-ref-note">参考天気図(見比べ用・任意)</div>
+          <img id="pressure-ref-img" class="pressure-ref-img" style="display:none">
+          <div class="pressure-ref-placeholder" id="pressure-ref-placeholder">画像を読み込むとここに表示されます</div>
+        </div>
       </div>
     </div>
   </div>
@@ -402,6 +505,7 @@
     <div class="howto-note">hot-air-balloon1(エリア・風・離陸地点を自分で選ぶ本格JDGモード)の
     最新版が遊べる環境は、Instagramでお知らせします。</div>
     <button id="setup-try" type="button" class="howto-try-btn">お試しでやってみる(最新版ではありません)</button>
+    <button id="setup-dev" type="button" class="howto-dev-btn">開発途中版(新機能を試す・不安定です)</button>
     <button id="setup-close" type="button" class="howto-close-btn">閉じる</button>
   </div>
 </div>

@@ -53,7 +53,7 @@ function decodeWind(s) {
 }
 const encodeWind = (rows) => rows.map((r) => `${r.ft},${r.dir},${r.kt}`).join(';');
 const shareUrl = () =>
-  `${location.origin}${location.pathname}?a=${AREA.lon.toFixed(4)},${AREA.lat.toFixed(4)}&w=${encodeWind(PIBAL)}${setupMode ? '&setup=1' : ''}`;
+  `${location.origin}${location.pathname}?a=${AREA.lon.toFixed(4)},${AREA.lat.toFixed(4)}&w=${encodeWind(PIBAL)}${setupMode ? '&setup=1' : ''}${devMode ? '&dev=1' : ''}`;
 
 let PIBAL = decodeWind(new URLSearchParams(location.search).get('w'))
   || WIND_PRESETS[0].rows.map(toRowObj);
@@ -604,6 +604,14 @@ document.getElementById('setup-try').addEventListener('click', () => {
   location.href = `${location.pathname}?${p.toString()}`;
 });
 
+// 「開発途中版」: GameTargetで検討中の新機能(気圧配置モデル等)を試せる実験用モード。
+// 安定版(?setup=1)とはコードを分離しているため、こちらが不安定でも安定版には影響しない
+document.getElementById('setup-dev').addEventListener('click', () => {
+  const p = new URLSearchParams(location.search);
+  p.set('dev', '1');
+  location.href = `${location.pathname}?${p.toString()}`;
+});
+
 // ---- エリア選択画面(日本全図のスリッピーマップ+プリセット) ----
 function selectArea() {
   return new Promise((resolve) => {
@@ -811,11 +819,13 @@ function setupAreaMap(cv, onSelect) {
 // ---- メイン ----
 // 既定では競技のルール説明(エリア選択・ブリーフィング画面)を省き、即フライト画面から始める。
 // 実際のJDG競技のようにエリア/風/離陸地点を自分で選びたい場合は URL に ?setup=1 を付ける。
+// ?dev=1 は GameTarget で検討中の新機能を試す実験用モード(安定版とはコードを分離している)。
 const mainParams = new URLSearchParams(location.search);
 const setupMode = mainParams.has('setup');
+const devMode = mainParams.has('dev');
 const hasChosenArea = mainParams.has('a'); // 住所検索や共有URLなどで明示的にエリアが指定されているか
 AREA = decodeArea(mainParams.get('a'));
-if (!AREA) AREA = setupMode ? await selectArea() : PRESET_AREAS[0];
+if (!AREA) AREA = (setupMode || devMode) ? await selectArea() : PRESET_AREAS[0];
 
 const loadingEl = document.getElementById('loading');
 document.getElementById('load-title').textContent =
@@ -831,6 +841,8 @@ loadingEl.remove();
 // ---- ブリーフィング(タスクシート+パイバル編集+離陸地点選択) ----
 // setupMode のときだけ構築する(既定モードでは風は既定値/URL指定のまま使う)
 if (setupMode) setupWindEditor();
+// devMode用は完全に別関数・別要素(#dev-briefing 以下)を使う。安定版のコードには触れない
+if (devMode) setupDevWindEditor();
 
 function setupWindEditor() {
   const sel = document.getElementById('wind-preset');
@@ -900,9 +912,84 @@ function copyShare(btn) {
     .catch(() => { btn.textContent = 'コピー失敗'; })
     .finally(() => setTimeout(() => { btn.textContent = orig; }, 1600));
 }
+
+// ---- 開発途中版(?dev=1)専用: 風エディタ ----
+// 上記の setupWindEditor 等の複製。安定版(setupMode)のコードとは完全に独立させている
+// (GameTargetで検討中の気圧配置モデル等は、今後この関数群に追加していく)
+function setupDevWindEditor() {
+  const sel = document.getElementById('wind-preset-dev');
+  sel.innerHTML = WIND_PRESETS
+    .map((p, i) => `<option value="${i}">${p.name}</option>`)
+    .join('') + '<option value="custom">カスタム</option>';
+  if (new URLSearchParams(location.search).has('w')) sel.value = 'custom';
+  renderDevEditorRows(PIBAL);
+
+  sel.addEventListener('change', () => {
+    if (sel.value === 'custom') return;
+    renderDevEditorRows(WIND_PRESETS[Number(sel.value)].rows.map(toRowObj));
+  });
+  document.getElementById('wind-add-dev').addEventListener('click', () => {
+    const rows = readDevEditorRows();
+    const last = rows[rows.length - 1];
+    rows.push(last ? { ft: last.ft + 1000, dir: last.dir, kt: last.kt } : { ft: 0, dir: 180, kt: 5 });
+    renderDevEditorRows(rows);
+    sel.value = 'custom';
+  });
+  const editor = document.getElementById('wind-editor-dev');
+  editor.addEventListener('input', () => { sel.value = 'custom'; });
+  editor.addEventListener('click', (e) => {
+    if (!e.target.classList.contains('del')) return;
+    if (editor.querySelectorAll('tr').length <= 1) return; // 最低1行は残す
+    e.target.closest('tr').remove();
+    sel.value = 'custom';
+  });
+  document.getElementById('wind-copy-dev').addEventListener('click', (e) => {
+    applyDevWindFromEditor();
+    copyShare(e.target);
+  });
+}
+
+function renderDevEditorRows(rows) {
+  document.getElementById('wind-editor-dev').innerHTML = rows.map((r) =>
+    `<tr><td><input type="number" class="w-ft" step="100" min="0" value="${r.ft}"></td>` +
+    `<td><input type="number" class="w-dir" step="10" min="0" max="360" value="${r.dir}"></td>` +
+    `<td><input type="number" class="w-kt" step="1" min="0" value="${r.kt}"></td>` +
+    `<td><button type="button" class="del" title="行を削除">×</button></td></tr>`).join('');
+}
+
+function readDevEditorRows() {
+  return [...document.querySelectorAll('#wind-editor-dev tr')]
+    .map((tr) => ({
+      ft: Number(tr.querySelector('.w-ft').value),
+      dir: ((Number(tr.querySelector('.w-dir').value) % 360) + 360) % 360,
+      kt: Number(tr.querySelector('.w-kt').value),
+    }))
+    .filter((r) => Number.isFinite(r.ft) && Number.isFinite(r.dir) && Number.isFinite(r.kt)
+      && r.ft >= 0 && r.kt >= 0)
+    .sort((a, b) => a.ft - b.ft);
+}
+
+// エディタの内容を有効な風テーブルとして確定し、URLにも反映する(devMode版)
+function applyDevWindFromEditor() {
+  const rows = readDevEditorRows();
+  if (rows.length) PIBAL = rows;
+  renderFlightPibal();
+  history.replaceState(null, '', shareUrl());
+}
+
 document.getElementById('result-share').addEventListener('click', (e) => copyShare(e.target));
 
 const launchSel = { x: null, z: null };
+const devLaunchSel = { x: null, z: null }; // devMode専用(?dev=1)の離陸地点選択状態
+
+// 気圧配置(H・L)の状態(devMode専用)。setupPressureMap() が下の if(devMode) ブロックで
+// 呼ばれるより前に、ここで初期化しておく必要がある(呼ばれた時点で参照するため)
+const devPressure = { points: [] }; // { type: 'h'|'l', lon, lat, hpa }
+const PRESSURE_MAX_PER_TYPE = 5;
+const PRESSURE_DEFAULT_HPA = { h: 1015, l: 1005 };
+let pressureMode = 'h'; // 'h' または 'l' — 次にクリックした位置をどちらに置くか
+let renderPressureMap = () => {}; // setupPressureMap内でrenderを差し替える(クリア等から呼ぶため)
+
 // setupMode: フルのJDGブリーフィング(タスクシート+風編集+離陸地点選択)を表示。
 // hasChosenArea(住所検索などで来た場合): タスクシート/風編集は省き、離陸地点選択の地図だけを表示する
 // それ以外(初回起動時の既定エリア): ブリーフィング自体を作らず、従来通り即フライト開始する
@@ -919,6 +1006,14 @@ if (setupMode || hasChosenArea) {
     const dp = defaultLaunchPoint();
     launchMapApi.selectAt(dp.x, dp.z);
   }
+}
+// devMode: フルJDGブリーフィング相当を、安定版(#briefing)とは別要素(#dev-briefing)で表示する
+if (devMode) {
+  const devLaunchMapApi = setupDevLaunchMap();
+  document.getElementById('dev-briefing').style.display = '';
+  void devLaunchMapApi; // 現時点では離陸地点選択のみ
+  setupPressureMap();      // 気圧配置(H・L)ステップ2: 位置・気圧値の入力のみ、まだ風の計算はしない
+  renderPressureTable();
 }
 
 // ブリーフィング地図: ズーム(ホイール)+パン(ドラッグ)可能な簡易スリッピーマップ。
@@ -1072,6 +1167,294 @@ document.getElementById('launch-btn').addEventListener('click', () => {
   startFlight(launchSel.x, launchSel.z);
 });
 
+// ---- 開発途中版(?dev=1)専用: 離陸地点選択マップ ----
+// 上記 setupLaunchMap の複製。安定版のコードとは完全に独立させている。
+// devLaunchSel / launch-map-dev / launch-btn-dev を使い、#dev-briefing 内でのみ動作する
+function setupDevLaunchMap() {
+  const cv = document.getElementById('launch-map-dev');
+  const ctx = cv.getContext('2d');
+  const M = terrain.map;
+  const tm13 = terrain.tileMeters;            // z13タイルの一辺(m)
+  const c13x = M.x0 - M.minX / tm13;          // 世界原点のz13タイル座標
+  const c13y = M.y0 - M.minZ / tm13;
+  const fitScale = cv.width / terrain.sizeMeters; // 全域表示のpx/m
+  const MAX_SCALE = 1.0;
+  const view = {
+    x: M.minX + terrain.sizeMeters / 2,
+    z: M.minZ + terrain.sizeMeters / 2,
+    scale: fitScale,
+  };
+
+  const tiles = new Map(); // "z/x/y" -> ImageBitmap | 'loading' | 'error'
+  function getTile(z, tx, ty) {
+    const key = `${z}/${tx}/${ty}`;
+    const v = tiles.get(key);
+    if (v) return v instanceof ImageBitmap ? v : null;
+    tiles.set(key, 'loading');
+    fetch(`https://cyberjapandata.gsi.go.jp/xyz/std/${z}/${tx}/${ty}.png`)
+      .then((r) => { if (!r.ok) throw 0; return r.blob(); })
+      .then(createImageBitmap)
+      .then((bmp) => { tiles.set(key, bmp); render(); })
+      .catch(() => tiles.set(key, 'error'));
+    return null;
+  }
+
+  const cssRatio = () => cv.width / cv.clientWidth;
+  const worldToScreen = (wx, wz) => [
+    (wx - view.x) * view.scale + cv.width / 2,
+    (wz - view.z) * view.scale + cv.height / 2,
+  ];
+  const screenToWorld = (sx, sy) => [
+    (sx - cv.width / 2) / view.scale + view.x,
+    (sy - cv.height / 2) / view.scale + view.z,
+  ];
+  function clampView() {
+    const half = cv.width / 2 / view.scale;
+    view.x = THREE.MathUtils.clamp(view.x, M.minX + half, M.minX + terrain.sizeMeters - half);
+    view.z = THREE.MathUtils.clamp(view.z, M.minZ + half, M.minZ + terrain.sizeMeters - half);
+  }
+
+  function render() {
+    ctx.fillStyle = '#0d1620';
+    ctx.fillRect(0, 0, cv.width, cv.height);
+
+    let z = Math.round(13 + Math.log2((view.scale * tm13) / 256));
+    z = THREE.MathUtils.clamp(z, 11, 17);
+    const f = 2 ** (z - 13);
+    const tmz = tm13 / f;
+
+    const [wL, wT] = screenToWorld(0, 0);
+    const [wR, wB] = screenToWorld(cv.width, cv.height);
+    const txMin = Math.max(Math.floor((c13x + wL / tm13) * f), Math.floor(M.x0 * f));
+    const txMax = Math.min(Math.floor((c13x + wR / tm13) * f), Math.ceil((M.x0 + M.n) * f) - 1);
+    const tyMin = Math.max(Math.floor((c13y + wT / tm13) * f), Math.floor(M.y0 * f));
+    const tyMax = Math.min(Math.floor((c13y + wB / tm13) * f), Math.ceil((M.y0 + M.n) * f) - 1);
+    for (let ty = tyMin; ty <= tyMax; ty++) {
+      for (let tx = txMin; tx <= txMax; tx++) {
+        const bmp = getTile(z, tx, ty);
+        if (!bmp) continue;
+        const [sx, sy] = worldToScreen((tx / f - c13x) * tm13, (ty / f - c13y) * tm13);
+        const s = tmz * view.scale;
+        ctx.drawImage(bmp, sx, sy, s + 0.5, s + 0.5);
+      }
+    }
+
+    // ターゲット(橙X+白丸)
+    const [tx, ty] = worldToScreen(TARGET_XZ.x, TARGET_XZ.z);
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(tx, ty, 16, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = '#ff5a00';
+    ctx.lineWidth = 7;
+    ctx.beginPath();
+    ctx.moveTo(tx - 11, ty - 11); ctx.lineTo(tx + 11, ty + 11);
+    ctx.moveTo(tx - 11, ty + 11); ctx.lineTo(tx + 11, ty - 11);
+    ctx.stroke();
+    // 選択中の離陸地点(赤丸)
+    if (devLaunchSel.x !== null) {
+      const [lx, ly] = worldToScreen(devLaunchSel.x, devLaunchSel.z);
+      ctx.fillStyle = '#e53935';
+      ctx.beginPath();
+      ctx.arc(lx, ly, 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(lx, ly, 14, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  function zoomAt(ox, oy, dir) {
+    const [wx, wz] = screenToWorld(ox * cssRatio(), oy * cssRatio());
+    const k = dir > 0 ? 1.3 : 1 / 1.3;
+    view.scale = THREE.MathUtils.clamp(view.scale * k, fitScale, MAX_SCALE);
+    view.x = wx - (ox * cssRatio() - cv.width / 2) / view.scale;
+    view.z = wz - (oy * cssRatio() - cv.height / 2) / view.scale;
+    clampView();
+    render();
+  }
+  cv.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    zoomAt(e.offsetX, e.offsetY, e.deltaY < 0 ? 1 : -1);
+  }, { passive: false });
+
+  let panOrigin = null;
+  enablePointerNav(cv, cssRatio, {
+    onPanStart: () => { panOrigin = { x: view.x, z: view.z }; },
+    onPan: (dx, dy) => {
+      view.x = panOrigin.x - dx / view.scale;
+      view.z = panOrigin.z - dy / view.scale;
+      clampView();
+      render();
+    },
+    onTap: (ox, oy) => {
+      const [wx, wz] = screenToWorld(ox * cssRatio(), oy * cssRatio());
+      selectAt(wx, wz);
+    },
+    onZoom: zoomAt,
+  });
+
+  function selectAt(wx, wz) {
+    devLaunchSel.x = THREE.MathUtils.clamp(wx, M.minX, M.minX + terrain.sizeMeters);
+    devLaunchSel.z = THREE.MathUtils.clamp(wz, M.minZ, M.minZ + terrain.sizeMeters);
+    render();
+    const btn = document.getElementById('launch-btn-dev');
+    btn.disabled = false;
+    const d = Math.hypot(devLaunchSel.x - TARGET_XZ.x, devLaunchSel.z - TARGET_XZ.z);
+    btn.textContent = `離陸!(ターゲットまで ${(d / 1000).toFixed(2)} km)`;
+  }
+
+  render();
+  return { selectAt };
+}
+
+document.getElementById('launch-btn-dev').addEventListener('click', () => {
+  if (devLaunchSel.x === null) return;
+  applyDevWindFromEditor(); // 離陸時点のエディタ内容で風を確定
+  startFlight(devLaunchSel.x, devLaunchSel.z);
+});
+
+// ---- 開発途中版(?dev=1)専用: 気圧配置(H・L)のポイント選択 ----
+// 「地上風の揺らぎ(気圧配置モデル)」検討のステップ2(2026-07-24仕様確定版):
+// - 地図は天気図的な簡易表示(日本列島の簡略化した形を固定表示、パン・ズーム不要)
+// - H・Lはそれぞれ最大5個まで配置可能
+// - 各点は緯度経度に加えて気圧値(hPa)を持ち、下の表で編集できる(既存の風エディタと同じ考え方)
+// - 参考天気図の画像を読み込んで隣に表示できる
+// まだ風の計算はしない(位置と気圧値を入力できるだけ)
+// (状態・データ定義は devLaunchSel と同様、この関数群が呼ばれるより前の場所にまとめて置いてある)
+
+function setupPressureMap() {
+  const cv = document.getElementById('pressure-map-dev');
+  const ctx = cv.getContext('2d');
+  // フライトエリア選択画面(selectArea)と同じ初期ビュー(z=5, 日本全体+周辺が入る中心)を
+  // そのまま固定で使う。パン・ズーム・ドラッグは行わせない(スクロール機能なし、仕様により)
+  const z = 5;
+  const c = lonLatToTile(137.0, 38.0, z);
+
+  const tiles = new Map(); // "x/y" -> ImageBitmap | 'loading' | 'error'
+  function getTile(tx, ty) {
+    const key = `${tx}/${ty}`;
+    const v = tiles.get(key);
+    if (v) return v instanceof ImageBitmap ? v : null;
+    tiles.set(key, 'loading');
+    fetch(`https://cyberjapandata.gsi.go.jp/xyz/std/${z}/${tx}/${ty}.png`)
+      .then((r) => { if (!r.ok) throw 0; return r.blob(); })
+      .then(createImageBitmap)
+      .then((bmp) => { tiles.set(key, bmp); render(); })
+      .catch(() => tiles.set(key, 'error'));
+    return null;
+  }
+
+  const toScreen = (tx, ty) => [(tx - c.x) * 256 + cv.width / 2, (ty - c.y) * 256 + cv.height / 2];
+  const toTile = (sx, sy) => [(sx - cv.width / 2) / 256 + c.x, (sy - cv.height / 2) / 256 + c.y];
+  const tileToLonLat = (tx, ty) => [
+    (tx / 2 ** z) * 360 - 180,
+    (Math.atan(Math.sinh(Math.PI * (1 - (2 * ty) / 2 ** z))) * 180) / Math.PI,
+  ];
+
+  function drawMarker(lon, lat, label, color) {
+    const t = lonLatToTile(lon, lat, z);
+    const [sx, sy] = toScreen(t.x, t.y);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(sx, sy, 16, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, sx, sy);
+  }
+
+  function render() {
+    ctx.fillStyle = '#0d1620';
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    const n = 2 ** z;
+    const [txL, tyT] = toTile(0, 0);
+    const [txR, tyB] = toTile(cv.width, cv.height);
+    for (let ty = Math.max(0, Math.floor(tyT)); ty <= Math.min(n - 1, Math.floor(tyB)); ty++) {
+      for (let tx = Math.max(0, Math.floor(txL)); tx <= Math.min(n - 1, Math.floor(txR)); tx++) {
+        const bmp = getTile(tx, ty);
+        if (!bmp) continue;
+        const [sx, sy] = toScreen(tx, ty);
+        ctx.drawImage(bmp, sx, sy, 256.5, 256.5);
+      }
+    }
+    for (const p of devPressure.points) {
+      drawMarker(p.lon, p.lat, p.type === 'h' ? '高' : '低', p.type === 'h' ? '#d84040' : '#4088e0');
+    }
+  }
+  renderPressureMap = render;
+
+  // パン・ズームは不要(仕様により省略)。クリックした位置に、選択中(H/L)の点を追加するだけ
+  cv.addEventListener('click', (e) => {
+    const r = cv.width / cv.clientWidth;
+    const count = devPressure.points.filter((p) => p.type === pressureMode).length;
+    if (count >= PRESSURE_MAX_PER_TYPE) return; // 上限(各5個)に達したら追加しない
+    const [fx, fy] = toTile(e.offsetX * r, e.offsetY * r);
+    const [lon, lat] = tileToLonLat(fx, fy);
+    devPressure.points.push({
+      type: pressureMode, lon, lat, hpa: PRESSURE_DEFAULT_HPA[pressureMode],
+    });
+    render();
+    renderPressureTable();
+  });
+
+  render();
+}
+
+function renderPressureTable() {
+  document.getElementById('pressure-editor-dev').innerHTML = devPressure.points.map((p, i) => `
+    <tr data-i="${i}">
+      <td style="color:${p.type === 'h' ? '#ff8a8a' : '#8ab8ff'}">${p.type === 'h' ? '高(H)' : '低(L)'}</td>
+      <td>${p.lat.toFixed(2)}N</td>
+      <td>${p.lon.toFixed(2)}E</td>
+      <td><input type="number" class="p-hpa" step="1" value="${p.hpa}"></td>
+      <td><button type="button" class="del" title="削除">×</button></td>
+    </tr>`).join('');
+}
+
+function setPressureMode(mode) {
+  pressureMode = mode;
+  document.getElementById('pressure-mode-h').classList.toggle('active', mode === 'h');
+  document.getElementById('pressure-mode-l').classList.toggle('active', mode === 'l');
+}
+document.getElementById('pressure-mode-h').addEventListener('click', () => setPressureMode('h'));
+document.getElementById('pressure-mode-l').addEventListener('click', () => setPressureMode('l'));
+document.getElementById('pressure-clear').addEventListener('click', () => {
+  devPressure.points = [];
+  renderPressureMap();
+  renderPressureTable();
+});
+document.getElementById('pressure-editor-dev').addEventListener('input', (e) => {
+  if (!e.target.classList.contains('p-hpa')) return;
+  const i = Number(e.target.closest('tr').dataset.i);
+  devPressure.points[i].hpa = Number(e.target.value);
+});
+document.getElementById('pressure-editor-dev').addEventListener('click', (e) => {
+  if (!e.target.classList.contains('del')) return;
+  const i = Number(e.target.closest('tr').dataset.i);
+  devPressure.points.splice(i, 1);
+  renderPressureMap();
+  renderPressureTable();
+});
+
+// 参考天気図(画像ファイル)の読み込み — 見比べ用に隣へ表示するだけで、ゲームには使わない
+document.getElementById('pressure-ref-input').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const img = document.getElementById('pressure-ref-img');
+  img.src = URL.createObjectURL(file);
+  img.style.display = '';
+  document.getElementById('pressure-ref-placeholder').style.display = 'none';
+});
+
 // 既定モード(setupMode=false)の初心者向け既定離陸地点。
 // ターゲットから見て風上側 約3kmに置き、そのまま飛べば自然と
 // ターゲット付近へ流れていくようにする(巡航高度の目安として1500ft付近の風を採用)。
@@ -1095,6 +1478,7 @@ function startFlight(x, z) {
   camera.position.copy(controls.target).add(new THREE.Vector3(60, 35, 60));
   prevPos.copy(state.pos);
   document.getElementById('briefing').style.display = 'none';
+  document.getElementById('dev-briefing').style.display = 'none';
   flightReady = true;
   started = true;
 }
@@ -1341,10 +1725,10 @@ let lastDetailCheck = 0;
 let envGlow = 0;  // バーナー点火時の球皮内面の明るさ(0..1、滑らかに追従)
 let ripPull = 0;  // リップラインを引いた量(0..1、滑らかに追従)
 
-// 初回起動(既定エリア・setupなし・住所指定なし)ではブリーフィングを介さず即離陸する。
-// setupMode や hasChosenArea のときは、ブリーフィングの「離陸!」ボタンで startFlight が呼ばれる。
+// 初回起動(既定エリア・setupなし・住所指定なし・devなし)ではブリーフィングを介さず即離陸する。
+// setupMode / hasChosenArea / devMode のときは、ブリーフィングの「離陸!」ボタンで startFlight が呼ばれる。
 // ?fpv=1 を付けるとゴンドラ視点で開始(視点確認用、離陸後に反映される)
-if (!setupMode && !hasChosenArea) {
+if (!setupMode && !hasChosenArea && !devMode) {
   const lp = defaultLaunchPoint();
   startFlight(lp.x, lp.z);
 }
