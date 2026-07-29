@@ -281,6 +281,22 @@
     max-width: 100%; height: 240px; border: 1px dashed #345a7a; border-radius: 4px;
     display: flex; align-items: center; justify-content: center; color: #6a8; font-size: 12px;
   }
+  .b-windcalc { margin-top: 18px; border-top: 1px solid #2a3d52; padding-top: 14px; }
+  .windcalc-params { display: flex; gap: 14px; flex-wrap: wrap; margin: 8px 0 10px; }
+  .windcalc-params label { font-size: 12px; color: #9ecfff; display: flex; flex-direction: column; gap: 3px; }
+  .windcalc-params input {
+    width: 80px; padding: 5px 6px; border-radius: 4px; border: 1px solid #345a7a;
+    background: #0d1620; color: #eee; font-size: 13px;
+  }
+  .windcalc-result {
+    background: #0d1620; border: 1px solid #345a7a; border-radius: 4px; padding: 10px 12px;
+    font-size: 12px; line-height: 1.7; color: #cde; white-space: pre-wrap; margin: 0;
+    font-family: 'Consolas', 'Menlo', monospace;
+  }
+  .flight-windcalc-debug {
+    position: fixed; bottom: 14px; left: 14px; max-width: 360px; z-index: 40;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  }
 </style>
 </head>
 <body>
@@ -302,6 +318,10 @@
   <div class="row"><span>マーカー</span><span class="num" id="marker-info">残り 1</span></div>
   <div class="row"><span>残り時間</span><span class="num" id="clock">30:00</span></div>
 </details>
+
+<!-- devMode専用の隠しデバッグ表示。Wキーで表示/非表示。気圧配置モデルの計算過程を
+     フライト中の現在位置で確認できる(離陸前のブリーフィング画面と同じ内容を、リアルタイムで) -->
+<pre id="flight-windcalc-debug" class="windcalc-result flight-windcalc-debug" style="display:none"></pre>
 
 <div id="areasel" style="display:none">
   <div class="b-panel">
@@ -391,7 +411,7 @@
     </div>
 
     <div class="b-pressure">
-      <div class="b-sub">気圧配置(H・L) — 実験中(まだ風の計算はしません。位置と気圧値を入力するだけです)</div>
+      <div class="b-sub">気圧配置(H・L) — 実験中(位置・気圧値を入力すると、下で風を計算します)</div>
       <div class="pressure-tools">
         <button id="pressure-mode-h" type="button" class="pmode-btn pmode-h active">高気圧(H)を置く</button>
         <button id="pressure-mode-l" type="button" class="pmode-btn pmode-l">低気圧(L)を置く</button>
@@ -415,6 +435,18 @@
           <img id="pressure-ref-img" class="pressure-ref-img" style="display:none">
           <div class="pressure-ref-placeholder" id="pressure-ref-placeholder">画像を読み込むとここに表示されます</div>
         </div>
+      </div>
+
+      <div class="b-windcalc">
+        <div class="b-sub">風の計算(実験) — 気圧配置から地上風を計算し、離陸時にフライトへ反映します</div>
+        <div class="windcalc-params">
+          <label>K(勾配→風速kt) <input type="number" id="wc-K" step="0.5" value="8"></label>
+          <label>L(減衰距離km) <input type="number" id="wc-L" step="10" value="500"></label>
+          <label>減速係数(%) <input type="number" id="wc-damp" step="1" value="65"></label>
+          <label>角度補正(°) <input type="number" id="wc-angle" step="1" value="20"></label>
+          <label>地上層厚み(ft) <input type="number" id="wc-layer" step="100" value="1000"></label>
+        </div>
+        <pre class="windcalc-result" id="windcalc-result">H・Lを2点以上置くと、計算結果がここに表示されます。</pre>
       </div>
     </div>
   </div>

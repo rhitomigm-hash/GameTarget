@@ -70,8 +70,19 @@ const MARKER_TERMINAL = 10;              // 終端速度 m/s
 const MARKER_DRAG = 9.81 / MARKER_TERMINAL;
 const MARKER_WIND_TAU = 1.5;             // 水平速度が風に馴染む時定数 s
 
-function windAt(altM) {
-  const ft = altM * M2FT;
+// devMode: 気圧配置モデルを実際の飛行に反映する場合、離陸時点で計算した補正係数をここに保持する。
+// 未使用時(setupMode/既定モード、またはdevModeでもH・L未配置の場合)はnullのままで、
+// 従来通りパイバルのみで風を決める(このファイルの他の場所には影響しない)
+let pressureCalibration = null; // { ratio, angleOffset, layerFt, params } | null
+
+function windDirKtToVec(dir, kt) {
+  const toRad = ((dir + 180) * Math.PI) / 180; // FROM → 進行方向
+  const ms = kt * KT2MS;
+  return { dir, kt, vx: ms * Math.sin(toRad), vz: -ms * Math.cos(toRad) };
+}
+
+// パイバル表のみを使った、高度ftに対する風向・風速の補間(気圧配置モデルを使わない場合の基本形)
+function pibalInterpDirKt(ft) {
   let a = PIBAL[0], b = PIBAL[PIBAL.length - 1];
   if (ft <= a.ft) b = a;
   else if (ft >= b.ft) a = b;
@@ -85,9 +96,37 @@ function windAt(altM) {
   const delta = ((b.dir - a.dir + 540) % 360) - 180;
   const dir = (a.dir + delta * t + 360) % 360;
   const kt = a.kt + (b.kt - a.kt) * t;
-  const toRad = ((dir + 180) * Math.PI) / 180; // FROM → 進行方向
-  const ms = kt * KT2MS;
-  return { dir, kt, vx: ms * Math.sin(toRad), vz: -ms * Math.cos(toRad) };
+  return { dir, kt };
+}
+
+function windAt(altM, x, z) {
+  const ft = altM * M2FT;
+  // pressureCalibration がある(devModeでH・Lを使って離陸した)場合のみ、地上層(0〜layerFt)を
+  // 気圧配置モデルの値へ置き換える。それ以外・layerFtより上は、従来通りパイバルのみで決める
+  //
+  // 地上層の判定は「対地高度(AGL、地面からの高さ)」で行う(2026-07-29修正)。
+  // 海抜(MSL)で判定していたところ、離陸地点の標高がある場所では離陸直後から
+  // 「地上層の外」と誤判定され、パイバルとかけ離れた風向が出る不具合があった
+  if (pressureCalibration && x !== undefined && z !== undefined) {
+    const { ratio, angleOffset, layerFt, params } = pressureCalibration;
+    const groundY = terrain.getHeight(x, z); // 地面の標高(海抜、m)
+    const aglFt = (altM - groundY) * M2FT;   // 対地高度(ft)
+    if (aglFt < layerFt) {
+      const ll = localXZToLonLat(x, z);
+      const g = computeGroundWind(ll.lon, ll.lat, params);
+      const groundDir = (g.fromBearing + angleOffset + 360) % 360;
+      const groundKt = g.speedKt * ratio;
+      if (aglFt <= 0) return windDirKtToVec(groundDir, groundKt);
+      const upper = pibalInterpDirKt(layerFt); // 層の上端(layerFt)は従来通りパイバル側の値
+      const t = aglFt / layerFt;
+      const delta = ((upper.dir - groundDir + 540) % 360) - 180;
+      const dir = (groundDir + delta * t + 360) % 360;
+      const kt = groundKt + (upper.kt - groundKt) * t;
+      return windDirKtToVec(dir, kt);
+    }
+  }
+  const { dir, kt } = pibalInterpDirKt(ft);
+  return windDirKtToVec(dir, kt);
 }
 
 // ---- three.js セットアップ ----
@@ -413,6 +452,7 @@ addEventListener('keydown', (e) => {
   if (e.code === 'KeyV') toggleFpv();
   if (e.code === 'KeyM' && flightReady) dropMarker();
   if (e.code === 'KeyP') togglePibal();
+  if (e.code === 'KeyW' && devMode) toggleWindCalcDebug(); // 隠しコマンド: 気圧配置モデルの計算過程表示(devMode専用)
   if (e.code >= 'Digit1' && e.code <= 'Digit4') {
     timeScale = [1, 2, 4, 8][Number(e.code.slice(5)) - 1];
     document.getElementById('tscale').textContent = timeScale;
@@ -927,6 +967,7 @@ function setupDevWindEditor() {
   sel.addEventListener('change', () => {
     if (sel.value === 'custom') return;
     renderDevEditorRows(WIND_PRESETS[Number(sel.value)].rows.map(toRowObj));
+    applyDevWindFromEditor(); // PIBALを更新し、風の計算(キャリブレーション基準)にも反映する
   });
   document.getElementById('wind-add-dev').addEventListener('click', () => {
     const rows = readDevEditorRows();
@@ -936,12 +977,16 @@ function setupDevWindEditor() {
     sel.value = 'custom';
   });
   const editor = document.getElementById('wind-editor-dev');
-  editor.addEventListener('input', () => { sel.value = 'custom'; });
+  editor.addEventListener('input', () => {
+    sel.value = 'custom';
+    applyDevWindFromEditor(); // PIBALを更新し、風の計算(キャリブレーション基準)にも反映する
+  });
   editor.addEventListener('click', (e) => {
     if (!e.target.classList.contains('del')) return;
     if (editor.querySelectorAll('tr').length <= 1) return; // 最低1行は残す
     e.target.closest('tr').remove();
     sel.value = 'custom';
+    applyDevWindFromEditor();
   });
   document.getElementById('wind-copy-dev').addEventListener('click', (e) => {
     applyDevWindFromEditor();
@@ -975,6 +1020,7 @@ function applyDevWindFromEditor() {
   if (rows.length) PIBAL = rows;
   renderFlightPibal();
   history.replaceState(null, '', shareUrl());
+  updateWindCalc(); // パイバル(キャリブレーション基準)が変わったので風の計算表示も更新
 }
 
 document.getElementById('result-share').addEventListener('click', (e) => copyShare(e.target));
@@ -1305,6 +1351,7 @@ function setupDevLaunchMap() {
     btn.disabled = false;
     const d = Math.hypot(devLaunchSel.x - TARGET_XZ.x, devLaunchSel.z - TARGET_XZ.z);
     btn.textContent = `離陸!(ターゲットまで ${(d / 1000).toFixed(2)} km)`;
+    updateWindCalc(); // 離陸地点が変わるとパイバルとのキャリブレーション基準点も変わる
   }
 
   render();
@@ -1314,6 +1361,21 @@ function setupDevLaunchMap() {
 document.getElementById('launch-btn-dev').addEventListener('click', () => {
   if (devLaunchSel.x === null) return;
   applyDevWindFromEditor(); // 離陸時点のエディタ内容で風を確定
+
+  // 気圧配置モデル(H・L)が配置されていれば、離陸時点でパイバル(0ft)とキャリブレーションし、
+  // 実際のフライトの地上層(0〜layerFt)に反映する。未配置の場合は従来通りパイバルのみで飛ぶ
+  if (devPressure.points.length > 0) {
+    const params = windCalcReadParams();
+    const launch = localXZToLonLat(devLaunchSel.x, devLaunchSel.z);
+    const groundL = computeGroundWind(launch.lon, launch.lat, params);
+    const pibal0 = PIBAL.find((r) => r.ft === 0) || PIBAL[0];
+    const ratio = groundL.speedKt > 0.01 ? pibal0.kt / groundL.speedKt : 1;
+    const angleOffset = angleDiffDeg(pibal0.dir, groundL.fromBearing);
+    pressureCalibration = { ratio, angleOffset, layerFt: params.layerFt, params };
+  } else {
+    pressureCalibration = null;
+  }
+
   startFlight(devLaunchSel.x, devLaunchSel.z);
 });
 
@@ -1418,6 +1480,7 @@ function renderPressureTable() {
       <td><input type="number" class="p-hpa" step="1" value="${p.hpa}"></td>
       <td><button type="button" class="del" title="削除">×</button></td>
     </tr>`).join('');
+  updateWindCalc();
 }
 
 function setPressureMode(mode) {
@@ -1436,6 +1499,7 @@ document.getElementById('pressure-editor-dev').addEventListener('input', (e) => 
   if (!e.target.classList.contains('p-hpa')) return;
   const i = Number(e.target.closest('tr').dataset.i);
   devPressure.points[i].hpa = Number(e.target.value);
+  updateWindCalc();
 });
 document.getElementById('pressure-editor-dev').addEventListener('click', (e) => {
   if (!e.target.classList.contains('del')) return;
@@ -1454,6 +1518,197 @@ document.getElementById('pressure-ref-input').addEventListener('change', (e) => 
   img.style.display = '';
   document.getElementById('pressure-ref-placeholder').style.display = 'none';
 });
+
+// ---- 開発途中版(?dev=1)専用: 風の計算(ステップ3、2026-07-24仕様確定版) ----
+// 気圧場の勾配から地上風を計算し、離陸地点のパイバル(0ft)とキャリブレーションする。
+// まだ実際の飛行(startFlightのPIBAL参照)には反映していない。計算ロジックの検証・表示のみ
+
+// ローカル地形座標(x=東, z=南。dxE/dN の既存コメントに準拠)を緯度経度に変換する近似式
+// (プレイエリアは最大でも数十km四方なので、この程度の平面近似で十分)
+function localXZToLonLat(x, z) {
+  if (!AREA) return null;
+  const kmPerDegLat = 111.32;
+  const kmPerDegLon = 111.32 * Math.cos((AREA.lat * Math.PI) / 180);
+  const eastKm = x / 1000;
+  const northKm = -z / 1000; // +z は南なので、北成分は符号反転
+  return { lon: AREA.lon + eastKm / kmPerDegLon, lat: AREA.lat + northKm / kmPerDegLat };
+}
+
+function windCalcReadParams() {
+  return {
+    K: Number(document.getElementById('wc-K').value) || 0,
+    L: Math.max(1, Number(document.getElementById('wc-L').value) || 1),
+    damping: (Number(document.getElementById('wc-damp').value) || 0) / 100,
+    angle: Number(document.getElementById('wc-angle').value) || 0,
+    layerFt: Number(document.getElementById('wc-layer').value) || 1000,
+  };
+}
+
+// 2地点間の東西・南北方向の距離(km)。緯度1°=111.32km、経度1°はcos(緯度)分だけ短くなる近似
+function lonLatDeltaKm(lon1, lat1, lon2, lat2) {
+  const kmPerDegLat = 111.32;
+  const kmPerDegLon = 111.32 * Math.cos((lat1 * Math.PI) / 180);
+  return { dx: (lon2 - lon1) * kmPerDegLon, dy: (lat2 - lat1) * kmPerDegLat };
+}
+
+// 気圧場: 標準気圧(1013hPa)に、各H・L点からの影響(L²/(L²+距離²)で減衰)を足し合わせる
+function pressureAt(lon, lat, L) {
+  let p = 1013;
+  for (const pt of devPressure.points) {
+    const { dx, dy } = lonLatDeltaKm(lon, lat, pt.lon, pt.lat);
+    const d2 = dx * dx + dy * dy;
+    p += (pt.hpa - 1013) * ((L * L) / (L * L + d2));
+  }
+  return p;
+}
+
+// 気圧場の勾配(中心差分)。gx=東方向の変化率、gy=北方向の変化率(いずれも hPa/km)
+function pressureGradient(lon, lat, L) {
+  const eps = 0.05; // 度
+  const kmPerDegLat = 111.32;
+  const kmPerDegLon = 111.32 * Math.cos((lat * Math.PI) / 180);
+  const gx = (pressureAt(lon + eps, lat, L) - pressureAt(lon - eps, lat, L)) / (2 * eps * kmPerDegLon);
+  const gy = (pressureAt(lon, lat + eps, L) - pressureAt(lon, lat - eps, L)) / (2 * eps * kmPerDegLat);
+  return { gx, gy };
+}
+
+// 東西・南北成分のベクトルを、地図を上から見て時計回りにdeg度回転させる
+function rotateCW(x, y, deg) {
+  const rad = (deg * Math.PI) / 180;
+  const c = Math.cos(rad), s = Math.sin(rad);
+  return { x: x * c + y * s, y: -x * s + y * c };
+}
+// 東西・南北成分のベクトルを、方位角(0=北、時計回りに360まで)に変換
+function bearingFromXY(x, y) {
+  const deg = (Math.atan2(x, y) * 180) / Math.PI;
+  return (deg + 360) % 360;
+}
+
+// 上空相当の傾度風: 気圧が下がる方向(降り坂)を90°時計回りに回転させた向きに吹く
+// (高気圧の周りは時計回り、低気圧の周りは反時計回りになる、というルールと一致)
+function computeRawWind(lon, lat, params) {
+  const { gx, gy } = pressureGradient(lon, lat, params.L);
+  const gradMag = Math.hypot(gx, gy); // hPa/km
+  const downMag = gradMag || 1;
+  const down = { x: -gx / downMag, y: -gy / downMag }; // 気圧が下がる方向(単位ベクトル)
+  const blow = rotateCW(down.x, down.y, 90); // 吹いていく向き
+  const blowToBearing = bearingFromXY(blow.x, blow.y);
+  return {
+    speedKt: params.K * (gradMag * 100), // hPa/100kmあたりKノット
+    blowToBearing,
+    fromBearing: (blowToBearing + 180) % 360,
+  };
+}
+
+// 地上風: 上空風 × 減速係数、かつ低気圧側へさらに角度補正(時計回りにangle度)
+function computeGroundWind(lon, lat, params) {
+  const raw = computeRawWind(lon, lat, params);
+  const rad = (raw.blowToBearing * Math.PI) / 180;
+  const blowVec = rotateCW(Math.sin(rad), Math.cos(rad), params.angle);
+  const blowToBearing = bearingFromXY(blowVec.x, blowVec.y);
+  return { speedKt: raw.speedKt * params.damping, fromBearing: (blowToBearing + 180) % 360, raw };
+}
+
+function angleDiffDeg(a, b) {
+  let d = ((a - b + 540) % 360) - 180;
+  return d;
+}
+
+// 離陸地点のパイバル(0ft)を基準にキャリブレーションし、離陸地点・ターゲット地点の
+// 計算結果をまとめて表示する。H・Lが1点もない、または離陸地点未選択の場合は案内文のみ表示
+function updateWindCalc() {
+  const out = document.getElementById('windcalc-result');
+  if (!out) return;
+  if (devPressure.points.length === 0) {
+    out.textContent = 'H・Lを2点以上置くと、計算結果がここに表示されます。';
+    return;
+  }
+  if (devLaunchSel.x === null) {
+    out.textContent = '離陸地点を選択すると、パイバル(0ft)とのキャリブレーションを計算します。';
+    return;
+  }
+  const params = windCalcReadParams();
+  const launch = localXZToLonLat(devLaunchSel.x, devLaunchSel.z);
+  const rawL = computeRawWind(launch.lon, launch.lat, params);
+  const groundL = computeGroundWind(launch.lon, launch.lat, params);
+
+  const pibal0 = PIBAL.find((r) => r.ft === 0) || PIBAL[0];
+  const ratio = groundL.speedKt > 0.01 ? pibal0.kt / groundL.speedKt : 1;
+  const angleOffset = angleDiffDeg(pibal0.dir, groundL.fromBearing);
+  const calibratedL = { speedKt: groundL.speedKt * ratio, fromBearing: (groundL.fromBearing + angleOffset + 360) % 360 };
+
+  const targetLL = localXZToLonLat(TARGET_XZ.x, TARGET_XZ.z);
+  const groundT = computeGroundWind(targetLL.lon, targetLL.lat, params);
+  const calibratedT = { speedKt: groundT.speedKt * ratio, fromBearing: (groundT.fromBearing + angleOffset + 360) % 360 };
+
+  const fmt = (w) => `${w.fromBearing.toFixed(0)}° / ${w.speedKt.toFixed(1)}kt`;
+  out.textContent = [
+    `[離陸地点]`,
+    `  生の勾配風(上空相当): ${fmt(rawL)}`,
+    `  地上風(減速${(params.damping * 100).toFixed(0)}%+角度補正${params.angle}°): ${fmt(groundL)}`,
+    `  パイバル0ft: ${pibal0.dir}° / ${pibal0.kt}kt`,
+    `  補正係数: 倍率×${ratio.toFixed(2)} / 角度${angleOffset >= 0 ? '+' : ''}${angleOffset.toFixed(0)}°`,
+    `  補正後(≒パイバル0ftと一致): ${fmt(calibratedL)}`,
+    ``,
+    `[ターゲット地点(参考、地上クルー機能で使う想定)]`,
+    `  地上風(補正前): ${fmt(groundT)}`,
+    `  地上風(補正後): ${fmt(calibratedT)}`,
+    ``,
+    `※ 地上層(0〜${params.layerFt}ft)はこの値へ、それより上は既存パイバルへ滑らかに移行する` +
+    `(「離陸!」を押すと実際のフライトに反映されます)`,
+  ].join('\n');
+}
+['wc-K', 'wc-L', 'wc-damp', 'wc-angle', 'wc-layer'].forEach((id) => {
+  document.getElementById(id).addEventListener('input', updateWindCalc);
+});
+
+// ---- 隠しコマンド(Wキー、devMode専用): フライト中の計算過程デバッグ表示 ----
+// ブリーフィング画面の「風の計算(実験)」パネルと同じ内容を、飛行中の現在位置でリアルタイムに表示する
+let showWindCalcDebug = false;
+function toggleWindCalcDebug() {
+  showWindCalcDebug = !showWindCalcDebug;
+  document.getElementById('flight-windcalc-debug').style.display = showWindCalcDebug ? '' : 'none';
+}
+
+// 毎フレーム呼ばれるが、非表示中・気圧配置モデル未使用時は何もしない(負荷はごくわずか)
+function updateFlightWindCalcDebug(appliedW) {
+  if (!showWindCalcDebug) return;
+  const out = document.getElementById('flight-windcalc-debug');
+  if (!pressureCalibration) {
+    out.textContent = '気圧配置モデルは未使用です(H・Lを配置せずに離陸したフライトです)。';
+    return;
+  }
+  const { ratio, angleOffset, layerFt, params } = pressureCalibration;
+  const groundY = terrain.getHeight(state.pos.x, state.pos.z);
+  const aglFtNow = (state.pos.y - groundY) * M2FT; // 対地高度(ft)。地上層の判定と揃える
+  const here = localXZToLonLat(state.pos.x, state.pos.z);
+  const rawHere = computeRawWind(here.lon, here.lat, params);
+  const groundHere = computeGroundWind(here.lon, here.lat, params);
+  const calibratedHere = {
+    speedKt: groundHere.speedKt * ratio,
+    fromBearing: (groundHere.fromBearing + angleOffset + 360) % 360,
+  };
+  const targetLL = localXZToLonLat(TARGET_XZ.x, TARGET_XZ.z);
+  const groundT = computeGroundWind(targetLL.lon, targetLL.lat, params);
+  const calibratedT = {
+    speedKt: groundT.speedKt * ratio,
+    fromBearing: (groundT.fromBearing + angleOffset + 360) % 360,
+  };
+  const fmt = (w) => `${w.fromBearing.toFixed(0)}° / ${w.speedKt.toFixed(1)}kt`;
+  out.textContent = [
+    `[風の計算(隠しデバッグ、Wで閉じる)]`,
+    `現在高度: 対地${aglFtNow.toFixed(0)}ft ${aglFtNow < layerFt ? '(地上層内・モデル適用中)' : '(地上層の外・パイバルのみ)'}`,
+    `▶ 実際に使われている風(現在高度でブレンド後の最終値): ` +
+    `${appliedW.dir.toFixed(0)}° / ${appliedW.kt.toFixed(1)}kt`,
+    `現在地点:`,
+    `  生の勾配風(上空相当): ${fmt(rawHere)}`,
+    `  地上風(減速${(params.damping * 100).toFixed(0)}%+角度補正${params.angle}°): ${fmt(groundHere)}`,
+    `  補正係数(離陸時に固定): 倍率×${ratio.toFixed(2)} / 角度${angleOffset >= 0 ? '+' : ''}${angleOffset.toFixed(0)}°`,
+    `  補正後(0ft換算): ${fmt(calibratedHere)}`,
+    ``,
+    `ターゲット地点(参考): ${fmt(calibratedT)}`,
+  ].join('\n');
+}
 
 // 既定モード(setupMode=false)の初心者向け既定離陸地点。
 // ターゲットから見て風上側 約3kmに置き、そのまま飛べば自然と
@@ -1496,7 +1751,7 @@ const marker = { available: 1, state: null, mesh: null };
 function dropMarker() {
   if (marker.available <= 0 || state.grounded || expired) return;
   marker.available = 0;
-  const w = windAt(state.pos.y);
+  const w = windAt(state.pos.y, state.pos.x, state.pos.z);
   marker.state = {
     pos: state.pos.clone().add(new THREE.Vector3(0, 0.8, 0)),
     vel: new THREE.Vector3(w.vx, state.vy, w.vz), // 気球(=風)の速度を引き継ぐ
@@ -1511,8 +1766,7 @@ function dropMarker() {
 function stepMarker(dt) {
   const m = marker.state;
   if (!m || m.landed) return;
-  const w = windAt(m.pos.y);
-  // 鉛直: 重力+空気抵抗(終端速度 MARKER_TERMINAL)/ 水平: 風に漸近
+  const w = windAt(m.pos.y, m.pos.x, m.pos.z);
   m.vel.y += (-9.81 - MARKER_DRAG * m.vel.y) * dt;
   m.vel.x += ((w.vx - m.vel.x) / MARKER_WIND_TAU) * dt;
   m.vel.z += ((w.vz - m.vel.z) / MARKER_WIND_TAU) * dt;
@@ -1599,7 +1853,7 @@ function stepPhysics(dt) {
   state.vy += acc * dt;
   state.pos.y += state.vy * dt;
 
-  const w = windAt(state.pos.y);
+  const w = windAt(state.pos.y, state.pos.x, state.pos.z);
   if (!state.grounded) {
     state.pos.x += w.vx * dt;
     state.pos.z += w.vz * dt;
@@ -1775,6 +2029,7 @@ renderer.setAnimationLoop(() => {
     prevPos.copy(state.pos);
 
     updateHud(w);
+    updateFlightWindCalcDebug(w);
     drawCompass();
 
     // 気球の近くの地面を段階的に高解像度化(1.5秒おきに1枚ずつ)。
