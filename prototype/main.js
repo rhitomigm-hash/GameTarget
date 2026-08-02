@@ -992,6 +992,93 @@ function setupDevWindEditor() {
     applyDevWindFromEditor();
     copyShare(e.target);
   });
+  document.getElementById('wind-realdata-dev').addEventListener('click', fetchRealWindToAllPibalRows);
+}
+
+// devMode専用: Open-Meteo(無料・キー不要・CORS対応)から実況の風を高度別に取得し、
+// パイバル表の「すべての行」に、各行の高度ftへ内挿した値を反映する。
+// 気圧配置モデルは0ft行を基準にキャリブレーションする設計のため、これにより
+// 「実データを基準に気圧配置モデルを較正する」というスコープを、表全体に拡張したことになる。
+// エリア選択直後(離陸地点未選択)はエリア中心、離陸地点選択後はその地点の座標を使う
+const REALDATA_HEIGHT_VARS = ['10m', '80m', '120m', '180m']; // 地表からの高さ(AGL)
+const REALDATA_PRESSURE_VARS = ['1000hPa', '925hPa', '850hPa', '700hPa', '500hPa']; // 気圧面(高度はAMSL)
+async function fetchRealWindToAllPibalRows() {
+  const status = document.getElementById('wind-realdata-status');
+  const ll = (devLaunchSel.x !== null) ? localXZToLonLat(devLaunchSel.x, devLaunchSel.z) : AREA;
+  status.textContent = '取得中…';
+  try {
+    const hourlyVars = [
+      ...REALDATA_HEIGHT_VARS.flatMap((h) => [`wind_speed_${h}`, `wind_direction_${h}`]),
+      ...REALDATA_PRESSURE_VARS.flatMap((p) => [`wind_speed_${p}`, `wind_direction_${p}`, `geopotential_height_${p}`]),
+    ].join(',');
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${ll.lat}&longitude=${ll.lon}` +
+      `&hourly=${hourlyVars}&wind_speed_unit=kn&forecast_days=1`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.hourly || !data.hourly.time || !data.hourly.time.length) {
+      throw new Error('風データが取得できませんでした');
+    }
+
+    // 現在時刻に最も近い時間帯のインデックスを選ぶ
+    // (timezoneを指定していないためAPIの時刻はGMT。末尾にZを付けてUTCとして解釈する)
+    const now = Date.now();
+    const times = data.hourly.time.map((t) => new Date(`${t}:00Z`).getTime());
+    let idx = 0;
+    for (let i = 1; i < times.length; i++) {
+      if (Math.abs(times[i] - now) < Math.abs(times[idx] - now)) idx = i;
+    }
+
+    // 実データ点を高度ft(MSL)順に並べる。elevation は地点の標高(AMSL、m)。
+    // 高さ指定(10m等)は地表からの高さなので、標高を足してMSLに揃える
+    const elevM = Number(data.elevation) || 0;
+    const points = [];
+    for (const h of REALDATA_HEIGHT_VARS) {
+      const kt = data.hourly[`wind_speed_${h}`][idx];
+      const dir = data.hourly[`wind_direction_${h}`][idx];
+      if (kt == null || dir == null) continue;
+      points.push({ ft: (elevM + Number(h.replace('m', ''))) * M2FT, dir, kt });
+    }
+    for (const p of REALDATA_PRESSURE_VARS) {
+      const kt = data.hourly[`wind_speed_${p}`][idx];
+      const dir = data.hourly[`wind_direction_${p}`][idx];
+      const gh = data.hourly[`geopotential_height_${p}`][idx];
+      if (kt == null || dir == null || gh == null) continue;
+      points.push({ ft: gh * M2FT, dir, kt });
+    }
+    points.sort((a, b) => a.ft - b.ft);
+    if (points.length < 2) throw new Error('実データ点が不足しています');
+
+    // パイバル表の既存の高度ftはそのまま維持し、各行の値だけを実データからの内挿値に置き換える
+    // (同じ最短角度補間の考え方は pibalInterpDirKt に準拠)
+    const interp = (ft) => {
+      let a = points[0], b = points[points.length - 1];
+      if (ft <= a.ft) b = a;
+      else if (ft >= b.ft) a = b;
+      else {
+        for (let i = 0; i < points.length - 1; i++) {
+          if (ft >= points[i].ft && ft < points[i + 1].ft) { a = points[i]; b = points[i + 1]; break; }
+        }
+      }
+      const t = a === b ? 0 : (ft - a.ft) / (b.ft - a.ft);
+      const delta = ((b.dir - a.dir + 540) % 360) - 180;
+      const dir = Math.round((a.dir + delta * t + 360) % 360);
+      const kt = Math.round((a.kt + (b.kt - a.kt) * t) * 10) / 10;
+      return { dir, kt };
+    };
+
+    const rows = readDevEditorRows().map((r) => {
+      const { dir, kt } = interp(r.ft);
+      return { ft: r.ft, dir, kt };
+    });
+    renderDevEditorRows(rows);
+    document.getElementById('wind-preset-dev').value = 'custom';
+    applyDevWindFromEditor();
+    status.textContent = `取得成功(${data.hourly.time[idx]}時点、Open-Meteo、地点標高${elevM}m)。` +
+      `${rows.length}行すべてを実データからの内挿値へ反映しました。`;
+  } catch (err) {
+    status.textContent = `取得失敗: ${err.message}(通信環境をご確認ください)`;
+  }
 }
 
 function renderDevEditorRows(rows) {
@@ -1032,9 +1119,18 @@ const devLaunchSel = { x: null, z: null }; // devMode専用(?dev=1)の離陸地�
 // 呼ばれるより前に、ここで初期化しておく必要がある(呼ばれた時点で参照するため)
 const devPressure = { points: [] }; // { type: 'h'|'l', lon, lat, hpa }
 const PRESSURE_MAX_PER_TYPE = 5;
+// 実データ取得時に種別を付け替える(relabelPressureTypesByValue)ため、種別ごとの上限だけだと
+// 「付け替えで偏る → 少ないほうの種別に追加できる」を繰り返して合計が増えてしまう。
+// 仕様上の意図(H・L合わせて10点程度に収める)を保つため、合計の上限も設ける
+const PRESSURE_MAX_TOTAL = PRESSURE_MAX_PER_TYPE * 2;
 const PRESSURE_DEFAULT_HPA = { h: 1015, l: 1005 };
 let pressureMode = 'h'; // 'h' または 'l' — 次にクリックした位置をどちらに置くか
 let renderPressureMap = () => {}; // setupPressureMap内でrenderを差し替える(クリア等から呼ぶため)
+
+// 地上風の日周期変動(devMode専用)の状態。devPressureと同様、下のif(devMode)ブロックで
+// renderPressureTable() → updateDiurnalJudgment() から参照されるより前に初期化しておく必要がある
+// mode: 'dawn' | 'dusk' | null。duskRand/rollはボタンを押した時点で確定する乱数(下記setDiurnalMode参照)
+const DIURNAL = { sunrise: null, sunset: null, dawnTime: null, duskTime: null, mode: null, duskRand: 0, roll: 0 };
 
 // setupMode: フルのJDGブリーフィング(タスクシート+風編集+離陸地点選択)を表示。
 // hasChosenArea(住所検索などで来た場合): タスクシート/風編集は省き、離陸地点選択の地図だけを表示する
@@ -1060,6 +1156,32 @@ if (devMode) {
   void devLaunchMapApi; // 現時点では離陸地点選択のみ
   setupPressureMap();      // 気圧配置(H・L)ステップ2: 位置・気圧値の入力のみ、まだ風の計算はしない
   renderPressureTable();
+  fetchSunriseSunset();    // タスクシートに、このエリアの今日の日出・日没(実データ)を参考表示
+}
+
+// devMode専用: エリア中心の今日の日出・日没時刻をOpen-Meteoから取得しタスクシートに表示する。
+// この値は「地上風の日周期変動」モデルの離陸時刻(既定 早朝07:00 / 夕刻16:00)の算出には使わず、
+// 指定時刻がVFRで飛べる時間帯に収まっているかの確認(diurnalVfrWarning)に使う
+async function fetchSunriseSunset() {
+  const cell = document.getElementById('tasksheet-sunrise');
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${AREA.lat}&longitude=${AREA.lon}` +
+      `&daily=sunrise,sunset&timezone=auto&forecast_days=1`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const hm = (iso) => iso.slice(11, 16);
+    cell.textContent = `日出 ${hm(data.daily.sunrise[0])} / 日没 ${hm(data.daily.sunset[0])}` +
+      `(${data.daily.time[0]}、Open-Meteo実データ、現地時刻)`;
+
+    DIURNAL.sunrise = new Date(data.daily.sunrise[0]);
+    DIURNAL.sunset = new Date(data.daily.sunset[0]);
+    // 離陸時刻自体は日出・日没に依存しない(既定07:00/16:00)が、日付の基準と
+    // VFR警告の判定にこのデータを使うため、取得できた時点で計算し直す
+    recomputeDiurnalTimes();
+  } catch (err) {
+    cell.textContent = `取得失敗: ${err.message}`;
+  }
 }
 
 // ブリーフィング地図: ズーム(ホイール)+パン(ドラッグ)可能な簡易スリッピーマップ。
@@ -1352,6 +1474,7 @@ function setupDevLaunchMap() {
     const d = Math.hypot(devLaunchSel.x - TARGET_XZ.x, devLaunchSel.z - TARGET_XZ.z);
     btn.textContent = `離陸!(ターゲットまで ${(d / 1000).toFixed(2)} km)`;
     updateWindCalc(); // 離陸地点が変わるとパイバルとのキャリブレーション基準点も変わる
+    updateDiurnalJudgment(); // 離陸地点が変わると日周期判定の基準地点も変わる
   }
 
   render();
@@ -1454,11 +1577,14 @@ function setupPressureMap() {
   }
   renderPressureMap = render;
 
-  // パン・ズームは不要(仕様により省略)。クリックした位置に、選択中(H/L)の点を追加するだけ
+  // パン・ズームは不要(仕様により省略)。クリックした位置に、選択中(H/L)の点を追加するだけ。
+  // 種別ごとの上限(各5個)は「プレイヤーが手で置くとき」だけの制約で、実データ取得時の
+  // 自動付け替え(relabelPressureTypesByValue)では超えてよい(2026-08-02決定。詳細はそちらを参照)
   cv.addEventListener('click', (e) => {
     const r = cv.width / cv.clientWidth;
     const count = devPressure.points.filter((p) => p.type === pressureMode).length;
-    if (count >= PRESSURE_MAX_PER_TYPE) return; // 上限(各5個)に達したら追加しない
+    if (count >= PRESSURE_MAX_PER_TYPE) return;              // 上限(各5個)に達したら追加しない
+    if (devPressure.points.length >= PRESSURE_MAX_TOTAL) return; // 合計上限(10点)も超えない
     const [fx, fy] = toTile(e.offsetX * r, e.offsetY * r);
     const [lon, lat] = tileToLonLat(fx, fy);
     devPressure.points.push({
@@ -1481,6 +1607,7 @@ function renderPressureTable() {
       <td><button type="button" class="del" title="削除">×</button></td>
     </tr>`).join('');
   updateWindCalc();
+  updateDiurnalJudgment();
 }
 
 function setPressureMode(mode) {
@@ -1500,6 +1627,7 @@ document.getElementById('pressure-editor-dev').addEventListener('input', (e) => 
   const i = Number(e.target.closest('tr').dataset.i);
   devPressure.points[i].hpa = Number(e.target.value);
   updateWindCalc();
+  updateDiurnalJudgment();
 });
 document.getElementById('pressure-editor-dev').addEventListener('click', (e) => {
   if (!e.target.classList.contains('del')) return;
@@ -1508,6 +1636,74 @@ document.getElementById('pressure-editor-dev').addEventListener('click', (e) => 
   renderPressureMap();
   renderPressureTable();
 });
+
+// devMode専用: 置かれているH・L点それぞれの座標について、Open-Meteoの実況気圧
+// (海面更正気圧 pressure_msl)を取得し、各点のhpa欄を上書きする。
+// H・Lの「位置」は引き続きプレイヤーが指示する前提のまま(仕様どおり)、
+// 「気圧値」だけを実データに差し替える、というスコープ
+document.getElementById('pressure-realdata-dev').addEventListener('click', fetchRealPressureToPoints);
+async function fetchRealPressureToPoints() {
+  const status = document.getElementById('pressure-realdata-status');
+  if (devPressure.points.length === 0) {
+    status.textContent = '先に地図でH・Lを1点以上置いてください。';
+    return;
+  }
+  status.textContent = '取得中…';
+  try {
+    const results = await Promise.all(devPressure.points.map(async (p) => {
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${p.lat}&longitude=${p.lon}` +
+        `&current=pressure_msl`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const hpa = data.current && data.current.pressure_msl;
+      if (hpa == null) throw new Error('気圧データが取得できませんでした');
+      return { hpa: Math.round(hpa), time: data.current.time };
+    }));
+    devPressure.points.forEach((p, i) => { p.hpa = results[i].hpa; });
+    const relabeled = relabelPressureTypesByValue();
+    renderPressureMap();
+    renderPressureTable();
+    status.textContent = `取得成功(${results[0].time}時点、Open-Meteo)。${results.length}点の気圧hPaを反映しました。` +
+      (relabeled ? `\n${relabeled}` : '');
+  } catch (err) {
+    status.textContent = `取得失敗: ${err.message}(通信環境をご確認ください)`;
+  }
+}
+
+// 実データ取得後、各点のH・L種別を実測気圧に合わせて付け替える(2026-08-02決定)。
+// プレイヤーは勘でH・Lの位置を置くため、実データを入れると「Hと置いた点のほうが低い」といった
+// 食い違いが起きる。風の計算は気圧値だけを見ているため物理的には正しく動くが、マーカーの
+// 「高」「低」表示だけが実態とずれてしまうため、表示側を実測値に合わせる。
+//
+// 判定基準は固定値(1013hPa)ではなく、置かれた点どうしの平均との相対比較にする。
+// 夏の高気圧は1008hPa程度のこともあり、1013hPaを閾値にすると季節によって誤判定するため。
+// 風を決めるのは点どうしの気圧差なので、相対比較のほうがモデルの実態にも合う。
+//
+// **種別ごとの上限(各5個)は、ここではあえてチェックしない**(2026-08-02決定)。
+// 実際の気圧配置がH寄り・L寄りに偏ることは普通にあり、そこで無理に5個に収めようとすると
+// 「実測では6点とも周囲より高いのに、1点だけLと表示する」という、実態と食い違う表示に
+// 逆戻りしてしまう。上限は「プレイヤーが手で置くときの複雑さの歯止め」という位置づけなので、
+// 実データに合わせる付け替えでは超えてよい。点数自体は増えない(合計上限は配置時に担保)。
+// 付け替えが起きた場合は、その内容を説明する文字列を返す(空文字なら変更なし)
+function relabelPressureTypesByValue() {
+  const pts = devPressure.points;
+  if (pts.length === 0) return '';
+  const mean = pts.reduce((s, p) => s + p.hpa, 0) / pts.length;
+  let toH = 0, toL = 0;
+  for (const p of pts) {
+    // 平均ちょうどの点は、どちらとも言えないので現状維持にする
+    const t = p.hpa > mean ? 'h' : (p.hpa < mean ? 'l' : p.type);
+    if (t !== p.type) { if (t === 'h') toH++; else toL++; }
+    p.type = t;
+  }
+  if (!toH && !toL) return '';
+  const parts = [];
+  if (toL) parts.push(`H→L ${toL}点`);
+  if (toH) parts.push(`L→H ${toH}点`);
+  return `※ 実測値が周囲との比較(平均${mean.toFixed(0)}hPa)と合わなかったため、種別を付け替えました(${parts.join('、')})。` +
+    `置いた位置と実際の気圧配置がずれていた、ということです。`;
+}
 
 // 参考天気図(画像ファイル)の読み込み — 見比べ用に隣へ表示するだけで、ゲームには使わない
 document.getElementById('pressure-ref-input').addEventListener('change', (e) => {
@@ -1658,9 +1854,135 @@ function updateWindCalc() {
     `(「離陸!」を押すと実際のフライトに反映されます)`,
   ].join('\n');
 }
+// K・L等を変えると、気圧配置モデルの計算結果とそれを使う日周期判定の両方が変わる
 ['wc-K', 'wc-L', 'wc-damp', 'wc-angle', 'wc-layer'].forEach((id) => {
-  document.getElementById(id).addEventListener('input', updateWindCalc);
+  document.getElementById(id).addEventListener('input', () => {
+    updateWindCalc();
+    updateDiurnalJudgment();
+  });
 });
+
+// ---- devMode専用: 地上風の日周期変動(実験、2026-07-31設計) ----
+// 気圧配置モデルの地上風(離陸地点、パイバルとのキャリブレーション前の生の値)に、
+// 選択した開始時刻(早朝/夕方)の係数を掛け、実競技の「地上風5m/s前後はキャンセルの目安」を
+// シグモイド的な連続確率でキャンセル判定する。あくまで判定結果を表示するだけの実験機能で、
+// 実際のフライト(パイバルとのキャリブレーション)には影響しない
+
+// 離陸時刻は「早朝07:00 / 夕刻16:00」を既定とする実運用に合わせた時刻指定方式(画面上で変更可能)。
+// 日出・日没の実データは時刻の算出には使わず、指定した時刻がVFRで飛べる時間帯(日の出〜日没)に
+// 収まっているかの確認に使う(熱気球は日の出前・日没後は法律上飛行できないため)
+const DIURNAL_TIME_IDS = { dawn: 'wc-dawntime', dusk: 'wc-dusktime' };
+
+// "HH:MM" を、日出データと同じ日付のDateに変換する(日出データがなければ今日の日付を使う)
+function diurnalTimeOf(mode) {
+  const raw = document.getElementById(DIURNAL_TIME_IDS[mode]).value || '';
+  const m = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const base = DIURNAL.sunrise ? new Date(DIURNAL.sunrise) : new Date();
+  base.setHours(Number(m[1]), Number(m[2]), 0, 0);
+  return base;
+}
+
+const hhmm = (d) => (d ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : '--:--');
+
+// 指定時刻がVFRで飛べる時間帯(日の出〜日没)の外なら、その旨のメッセージを返す(問題なければ空文字)
+function diurnalVfrWarning(t) {
+  if (!t || !DIURNAL.sunrise || !DIURNAL.sunset) return '';
+  if (t < DIURNAL.sunrise) return `⚠ 日の出(${hhmm(DIURNAL.sunrise)})前のため、実際には飛行できない時刻です`;
+  if (t > DIURNAL.sunset) return `⚠ 日没(${hhmm(DIURNAL.sunset)})後のため、実際には飛行できない時刻です`;
+  return '';
+}
+
+// 入力された離陸時刻をボタンのラベルへ反映する。時刻欄の変更のたびに呼ばれる
+function recomputeDiurnalTimes() {
+  DIURNAL.dawnTime = diurnalTimeOf('dawn');
+  DIURNAL.duskTime = diurnalTimeOf('dusk');
+  document.getElementById('diurnal-dawn').textContent = `早朝(${hhmm(DIURNAL.dawnTime)}〜)`;
+  document.getElementById('diurnal-dusk').textContent = `夕方(${hhmm(DIURNAL.duskTime)}〜)`;
+  updateDiurnalJudgment(); // VFR警告は日出・日没データと時刻の両方に依存するため出し直す
+}
+document.getElementById('wc-dawntime').addEventListener('input', recomputeDiurnalTimes);
+document.getElementById('wc-dusktime').addEventListener('input', recomputeDiurnalTimes);
+recomputeDiurnalTimes(); // 日出・日没の取得を待たずに、既定時刻(07:00/16:00)でボタンを表示しておく
+
+function diurnalReadParams() {
+  return {
+    dawnCoef: Number(document.getElementById('wc-dawn').value) || 0,
+    duskMean: Number(document.getElementById('wc-duskmean').value) || 0,
+    duskWidth: Number(document.getElementById('wc-duskwidth').value) || 0,
+    cancelCenter: Number(document.getElementById('wc-cancelc').value) || 0,
+    cancelWidth: Math.max(0.01, Number(document.getElementById('wc-cancelw').value) || 0.01),
+  };
+}
+
+// 開始時刻ボタンを押したときだけ乱数を引き直す(夕方係数のばらつき・キャンセル抽選)。
+// 同じボタンをもう一度押せば再抽選になり、「際どい判断」を何度も試せる
+function setDiurnalMode(mode) {
+  DIURNAL.mode = mode;
+  DIURNAL.duskRand = Math.random() * 2 - 1; // -1〜+1
+  DIURNAL.roll = Math.random();
+  document.getElementById('diurnal-dawn').classList.toggle('active', mode === 'dawn');
+  document.getElementById('diurnal-dusk').classList.toggle('active', mode === 'dusk');
+  updateDiurnalJudgment();
+}
+document.getElementById('diurnal-dawn').addEventListener('click', () => setDiurnalMode('dawn'));
+document.getElementById('diurnal-dusk').addEventListener('click', () => setDiurnalMode('dusk'));
+['wc-dawn', 'wc-duskmean', 'wc-duskwidth', 'wc-cancelc', 'wc-cancelw'].forEach((id) => {
+  document.getElementById(id).addEventListener('input', updateDiurnalJudgment);
+});
+
+function updateDiurnalJudgment() {
+  const out = document.getElementById('diurnal-result');
+  if (!out) return;
+  const clearJudgeStyle = () => out.classList.remove('judge-go', 'judge-cancel');
+  if (!DIURNAL.mode) {
+    clearJudgeStyle();
+    out.textContent = '「フライト開始時刻」を先に選ぶと、ここに判定結果が表示されます(ボタンを押し直すと再判定します)。';
+    return;
+  }
+  if (devPressure.points.length === 0) {
+    clearJudgeStyle();
+    out.textContent = 'H・Lを2点以上置くと、判定できます。';
+    return;
+  }
+  const ll = (devLaunchSel.x !== null) ? localXZToLonLat(devLaunchSel.x, devLaunchSel.z) : AREA;
+  const params = windCalcReadParams();
+  const groundWind = computeGroundWind(ll.lon, ll.lat, params); // 気圧配置モデルの生の地上風(キャリブレーション前)
+
+  const dp = diurnalReadParams();
+  // 乱数(夕方係数のばらつき・キャンセル抽選)はボタンを押した時点で確定した値を使い回す。
+  // 係数の入力欄を触るたびに振り直すと、パラメータ調整のたびに結果が変わってしまい比較できないため
+  let coef;
+  if (DIURNAL.mode === 'dawn') {
+    coef = dp.dawnCoef; // 早朝はばらつきが小さいため固定係数
+  } else {
+    coef = dp.duskMean + DIURNAL.duskRand * dp.duskWidth; // 夕方は平均±ランダム幅
+  }
+  const diurnalKt = groundWind.speedKt * Math.max(0, coef);
+
+  // シグモイド: キャンセル中心を境に、幅の分だけなだらかに0→1へ変化する確率
+  const cancelProb = 1 / (1 + Math.exp(-(diurnalKt - dp.cancelCenter) / dp.cancelWidth));
+  const canceled = DIURNAL.roll < cancelProb;
+
+  const label = DIURNAL.mode === 'dawn' ? '早朝' : '夕方';
+  const startTime = DIURNAL.mode === 'dawn' ? DIURNAL.dawnTime : DIURNAL.duskTime;
+  const vfrWarning = diurnalVfrWarning(startTime);
+  out.classList.toggle('judge-go', !canceled);
+  out.classList.toggle('judge-cancel', canceled);
+  out.textContent = [
+    `【${label}】${hhmm(startTime)} 開始 — ${canceled ? '✕ フライトキャンセル' : '○ 決行'}`,
+    ...(vfrWarning ? [`  ${vfrWarning}`] : []),
+    ``,
+    `  気圧配置モデルの地上風(生値): ${groundWind.speedKt.toFixed(1)}kt`,
+    `  日周期係数: ×${coef.toFixed(2)}${DIURNAL.mode === 'dusk' ? `(平均${dp.duskMean.toFixed(2)}±${dp.duskWidth.toFixed(2)}のランダム)` : '(固定)'}`,
+    `  日周期反映後の地上風: ${diurnalKt.toFixed(1)}kt`,
+    `  キャンセル確率: ${(cancelProb * 100).toFixed(0)}%(中心${dp.cancelCenter}kt、幅${dp.cancelWidth}kt)`,
+    `  抽選値: ${DIURNAL.roll.toFixed(2)} ${canceled ? '<' : '≥'} ${cancelProb.toFixed(2)} → ${canceled ? 'キャンセル' : '決行'}`,
+    ``,
+    `※ ボタンを押し直すたびに再抽選します(係数の調整では再抽選しません)。`,
+    `※ 実際のフライトの風には影響せず、判定結果の表示のみです。`,
+  ].join('\n');
+}
 
 // ---- 隠しコマンド(Wキー、devMode専用): フライト中の計算過程デバッグ表示 ----
 // ブリーフィング画面の「風の計算(実験)」パネルと同じ内容を、飛行中の現在位置でリアルタイムに表示する

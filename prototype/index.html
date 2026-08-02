@@ -240,6 +240,8 @@
   }
   .wind-tools select { flex: 1; }
   .b-hint { margin-top: 12px; font-size: 12px; color: #cdd9e4; line-height: 1.7; }
+  /* 実データ取得の結果表示は、種別の付け替え通知などを改行して見せるため改行を活かす */
+  #pressure-realdata-status, #wind-realdata-status { white-space: pre-line; }
   #launch-btn, #launch-btn-dev {
     margin-top: 16px; width: 100%; padding: 11px 0; border: 0; border-radius: 6px;
     background: #2e6da4; color: #fff; font-size: 15px; cursor: pointer;
@@ -260,6 +262,10 @@
   }
   .pmode-btn.pmode-h.active { background: #7a2020; border-color: #d84040; color: #fff; }
   .pmode-btn.pmode-l.active { background: #1e3f7a; border-color: #4088e0; color: #fff; }
+  /* 日周期変動の開始時刻ボタン(早朝=朝焼けの橙、夕方=夕暮れの紫)。選択中がひと目で分かるようにする */
+  .pmode-btn.pmode-dawn.active { background: #7a4a10; border-color: #ffb347; color: #fff; }
+  .pmode-btn.pmode-dusk.active { background: #4a2a6a; border-color: #b98ae0; color: #fff; }
+  .pmode-btn:disabled { opacity: 0.45; cursor: default; }
   .pmode-clear { padding: 8px 14px; border-radius: 6px; border: 1px solid #4a3520; cursor: pointer;
     background: #16232f; color: #cba; font-size: 13px; }
   .pressure-ref-btn {
@@ -282,12 +288,17 @@
     display: flex; align-items: center; justify-content: center; color: #6a8; font-size: 12px;
   }
   .b-windcalc { margin-top: 18px; border-top: 1px solid #2a3d52; padding-top: 14px; }
+  .b-diurnal { margin-top: 18px; border-top: 1px solid #2a3d52; padding-top: 14px; }
+  /* 判定結果は決行/キャンセルで枠の色を変え、押した結果がひと目で分かるようにする */
+  .windcalc-result.judge-go { border-color: #4a8f5a; background: #101d16; }
+  .windcalc-result.judge-cancel { border-color: #a04040; background: #1d1010; }
   .windcalc-params { display: flex; gap: 14px; flex-wrap: wrap; margin: 8px 0 10px; }
   .windcalc-params label { font-size: 12px; color: #9ecfff; display: flex; flex-direction: column; gap: 3px; }
   .windcalc-params input {
     width: 80px; padding: 5px 6px; border-radius: 4px; border: 1px solid #345a7a;
     background: #0d1620; color: #eee; font-size: 13px;
   }
+  .windcalc-params input[type="time"] { width: 100px; }
   .windcalc-result {
     background: #0d1620; border: 1px solid #345a7a; border-radius: 4px; padding: 10px 12px;
     font-size: 12px; line-height: 1.7; color: #cde; white-space: pre-wrap; margin: 0;
@@ -385,21 +396,27 @@
           <tr><th>制限時間</th><td>30:00(ゲーム内時間)</td></tr>
           <tr><th>マーカー</th><td>1本(Mキーで投下)</td></tr>
           <tr><th>スコア</th><td>マーカー着地点〜ターゲット中心の距離</td></tr>
+          <tr><th>日出・日没</th><td id="tasksheet-sunrise">取得中…(このエリアの今日の実データ)</td></tr>
         </table>
         <div class="b-sub">パイバル観測データ(編集できます)</div>
         <div class="wind-tools">
           <select id="wind-preset-dev"></select>
           <button id="wind-add-dev" type="button">+行</button>
           <button id="wind-copy-dev" type="button">条件URLをコピー</button>
+          <button id="wind-realdata-dev" type="button">実データ取得(全高度)</button>
         </div>
         <table class="b-pibal">
           <thead><tr><th>高度ft</th><th>風向°</th><th>風速kt</th><th></th></tr></thead>
           <tbody id="wind-editor-dev"></tbody>
         </table>
+        <div class="b-hint" id="wind-realdata-status"></div>
         <div class="b-hint">
           風向はFROM(磁方位)。表は編集でき、プリセット選択・行の追加削除も可能です。<br>
           ターゲットの風上側に離陸地点を取り、高度で風を乗り換えて狙いましょう。<br>
           「条件URLをコピー」で、この風と同じ条件に挑戦できるURLを共有できます。<br>
+          「実データ取得(全高度)」は Open-Meteo の実況風(地表付近の高度別風+気圧面の風)を
+          現在の表の各行の高度に合わせて内挿し、パイバル表全体に反映する実験機能です
+          (気圧配置モデルはこの表の0ft行を基準にキャリブレーションします)。<br>
           <b style="color:#ffca5b;">※ 開発途中版です。新機能(気圧配置モデル等)は今後ここに追加されます。</b>
         </div>
       </div>
@@ -429,6 +446,11 @@
             <thead><tr><th>種別</th><th>緯度</th><th>経度</th><th>気圧hPa</th><th></th></tr></thead>
             <tbody id="pressure-editor-dev"></tbody>
           </table>
+          <button id="pressure-realdata-dev" type="button">実データ取得(各点の気圧)</button>
+          <div class="b-hint" id="pressure-realdata-status">
+            置いたH・L点それぞれの座標に対し、Open-Meteoの実況気圧(海面更正気圧)を取得して
+            気圧hPa欄へ反映します(先に地図でH・Lを置いてください)。
+          </div>
         </div>
         <div class="pressure-col">
           <div class="pressure-ref-note">参考天気図(見比べ用・任意)</div>
@@ -448,6 +470,24 @@
         </div>
         <pre class="windcalc-result" id="windcalc-result">H・Lを2点以上置くと、計算結果がここに表示されます。</pre>
       </div>
+    </div>
+
+    <div class="b-diurnal">
+      <div class="b-sub">地上風の日周期変動(実験) — フライト開始時刻を選ぶと、気圧配置モデルの風に日周期係数を掛けて判断材料にします</div>
+      <div class="pressure-tools">
+        <button id="diurnal-dawn" type="button" class="pmode-btn pmode-dawn">早朝(07:00〜)</button>
+        <button id="diurnal-dusk" type="button" class="pmode-btn pmode-dusk">夕方(16:00〜)</button>
+      </div>
+      <div class="windcalc-params">
+        <label>早朝の離陸時刻 <input type="time" id="wc-dawntime" value="07:00"></label>
+        <label>夕刻の離陸時刻 <input type="time" id="wc-dusktime" value="16:00"></label>
+        <label>早朝係数 <input type="number" id="wc-dawn" step="0.05" value="0.35"></label>
+        <label>夕方係数(平均) <input type="number" id="wc-duskmean" step="0.05" value="0.8"></label>
+        <label>夕方係数(ランダム幅±) <input type="number" id="wc-duskwidth" step="0.05" value="0.3"></label>
+        <label>キャンセル中心(kt) <input type="number" id="wc-cancelc" step="0.5" value="10"></label>
+        <label>キャンセル幅(kt) <input type="number" id="wc-cancelw" step="0.5" value="2"></label>
+      </div>
+      <pre class="windcalc-result" id="diurnal-result">「フライト開始時刻」を先に選ぶと、ここに判定結果が表示されます(ボタンを押し直すと再判定します)。</pre>
     </div>
   </div>
 </div>
