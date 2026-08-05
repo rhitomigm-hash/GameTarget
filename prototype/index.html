@@ -473,6 +473,30 @@
     </div>
 
     <div class="b-diurnal">
+      <div class="b-sub">気象条件(実データ・注意喚起) — パイバルの「実データ取得(全高度)」と同時に取得します</div>
+      <pre class="windcalc-result" id="wx-result">「実データ取得(全高度)」を押すと、その時点の風・ガスト・視程・天気をここに表示します。</pre>
+      <div class="windcalc-params">
+        <label>ガストの目安(kt・任意) <input type="number" id="wx-gust" step="1" placeholder="未設定"></label>
+        <label>視程の目安(m・任意) <input type="number" id="wx-vis" step="500" placeholder="未設定"></label>
+        <label>CAPEの目安(J/kg・任意) <input type="number" id="wx-cape" step="100" placeholder="未設定"></label>
+      </div>
+      <div class="b-hint">
+        熱気球は<b>早朝や夕凪の穏やかな風のときに飛びます</b>。ガスト(瞬間的に強く吹く風)は
+        できるだけない方が望ましいとされますが、<b>何ktから飛べないという明確な基準はありません</b>。
+        そのためSORAでは合否を判定せず、数値を示して注意を促すだけにしています。<br>
+        <b>CAPE</b>は「大気がどれだけ対流(上昇気流)を起こしうるか」を表す量です。
+        値が大きいほど雷雨や活発な熱気泡(サーマル)が起こりやすい状態を意味しますが、
+        <b>あくまで潜在的なエネルギーであり、きっかけがなければ実際に荒れるとは限りません</b>。
+        括弧内の区分は気象一般で使われるもので、熱気球の可否基準ではありません。<br>
+        上の欄に数値を入れると、その値を超えたときに印を付けます(自分の目安を試すための機能で、
+        既定では何も設定していません)。<br>
+        <b style="color:#ffca5b;">※ これはゲーム内の参考値です。</b>
+        実際のフライトの可否判断には使えません。実際に飛ぶ際は、必ず公式の気象情報と
+        現地の目視で判断してください。
+      </div>
+    </div>
+
+    <div class="b-diurnal">
       <div class="b-sub">地上風の日周期変動(実験) — フライト開始時刻を選ぶと、気圧配置モデルの風に日周期係数を掛けて判断材料にします</div>
       <div class="pressure-tools">
         <button id="diurnal-dawn" type="button" class="pmode-btn pmode-dawn">早朝(07:00〜)</button>

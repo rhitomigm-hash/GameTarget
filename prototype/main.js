@@ -18,6 +18,15 @@ const PRESET_AREAS = [
   { name: '上士幌(北海道)', lon: 143.30, lat: 43.23 },
 ];
 
+// 外部API由来の文字列(住所検索の候補名など)をHTMLに埋め込む前に必ずエスケープする。
+// 国土地理院のAddress Search APIは信頼できるが、レスポンスをそのままinnerHTMLや
+// HTML属性値に差し込むとXSSの経路になりうるため、常にエスケープしてから使う(2026-08-03)
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[c]);
+}
+
 // URLの ?a=lon,lat からエリアを復元
 function decodeArea(s) {
   if (!s) return null;
@@ -577,14 +586,27 @@ function setupAddressSearch() {
         list.innerHTML = '<li class="as-empty">見つかりませんでした</li>';
         return;
       }
-      list.innerHTML = items.slice(0, 8).map((it) => {
-        const [lon, lat] = it.geometry.coordinates;
-        return `<li data-lon="${lon}" data-lat="${lat}" data-name="${it.properties.title}">${it.properties.title}</li>`;
+      // 座標も数値に変換してから埋め込む。title と同じくAPI由来の値なので、
+      // 文字列のまま属性に差し込むと `130.3" onmouseover="…` のように属性を抜け出せてしまう
+      const cands = items
+        .map((it) => ({
+          lon: Number(it?.geometry?.coordinates?.[0]),
+          lat: Number(it?.geometry?.coordinates?.[1]),
+          title: String(it?.properties?.title ?? ''),
+        }))
+        .filter((c) => Number.isFinite(c.lon) && Number.isFinite(c.lat))
+        .slice(0, 8);
+      if (!cands.length) {
+        list.innerHTML = '<li class="as-empty">見つかりませんでした</li>';
+        return;
+      }
+      list.innerHTML = cands.map((c) => {
+        const title = escapeHtml(c.title);
+        return `<li data-lon="${c.lon}" data-lat="${c.lat}" data-name="${title}">${title}</li>`;
       }).join('');
       // 一番上の候補を自動で全画面マップに表示(住所検索は大まかな一致になりがちなので、
       // ここで実際の位置を目で見て微調整できるようにする)
-      const [lon0, lat0] = items[0].geometry.coordinates;
-      openMapAt(lon0, lat0, items[0].properties.title);
+      openMapAt(cands[0].lon, cands[0].lat, cands[0].title);
     } catch {
       list.innerHTML = '<li class="as-empty">検索に失敗しました</li>';
     }
@@ -1002,6 +1024,10 @@ function setupDevWindEditor() {
 // エリア選択直後(離陸地点未選択)はエリア中心、離陸地点選択後はその地点の座標を使う
 const REALDATA_HEIGHT_VARS = ['10m', '80m', '120m', '180m']; // 地表からの高さ(AGL)
 const REALDATA_PRESSURE_VARS = ['1000hPa', '925hPa', '850hPa', '700hPa', '500hPa']; // 気圧面(高度はAMSL)
+// 気象条件(第1段階、2026-08-05)。上の風と同じリクエストに相乗りするため、通信回数は増えない
+// (実測: 変数を足してもHTTPリクエストは1回のまま、レスポンスは約2.5KB増のみ)。
+// いずれも表示するだけで、風の計算・フライトの挙動には影響させない
+const REALDATA_WX_VARS = ['wind_gusts_10m', 'visibility', 'weather_code', 'precipitation', 'cape'];
 async function fetchRealWindToAllPibalRows() {
   const status = document.getElementById('wind-realdata-status');
   const ll = (devLaunchSel.x !== null) ? localXZToLonLat(devLaunchSel.x, devLaunchSel.z) : AREA;
@@ -1010,6 +1036,7 @@ async function fetchRealWindToAllPibalRows() {
     const hourlyVars = [
       ...REALDATA_HEIGHT_VARS.flatMap((h) => [`wind_speed_${h}`, `wind_direction_${h}`]),
       ...REALDATA_PRESSURE_VARS.flatMap((p) => [`wind_speed_${p}`, `wind_direction_${p}`, `geopotential_height_${p}`]),
+      ...REALDATA_WX_VARS,
     ].join(',');
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${ll.lat}&longitude=${ll.lon}` +
       `&hourly=${hourlyVars}&wind_speed_unit=kn&forecast_days=1`;
@@ -1074,12 +1101,140 @@ async function fetchRealWindToAllPibalRows() {
     renderDevEditorRows(rows);
     document.getElementById('wind-preset-dev').value = 'custom';
     applyDevWindFromEditor();
+    renderWeatherConditions(data, idx); // 同じレスポンスから気象条件も表示する
     status.textContent = `取得成功(${data.hourly.time[idx]}時点、Open-Meteo、地点標高${elevM}m)。` +
       `${rows.length}行すべてを実データからの内挿値へ反映しました。`;
   } catch (err) {
     status.textContent = `取得失敗: ${err.message}(通信環境をご確認ください)`;
   }
 }
+
+// WMO天気コード → 日本語ラベル。Open-Meteoが返す weather_code の主要なものを対応させる
+const WMO_LABELS = {
+  0: '快晴', 1: '晴れ(ほぼ快晴)', 2: '晴れ時々曇り', 3: '曇り',
+  45: '霧', 48: '霧(着氷性)',
+  51: '霧雨(弱)', 53: '霧雨', 55: '霧雨(強)',
+  61: '雨(弱)', 63: '雨', 65: '雨(強)',
+  66: '着氷性の雨(弱)', 67: '着氷性の雨(強)',
+  71: '雪(弱)', 73: '雪', 75: '雪(強)', 77: '霧雪',
+  80: 'にわか雨(弱)', 81: 'にわか雨', 82: 'にわか雨(激しい)',
+  85: 'にわか雪(弱)', 86: 'にわか雪(強)',
+  95: '雷雨', 96: '雷雨(ひょうを伴う)', 99: '雷雨(激しいひょう)',
+};
+
+// CAPE(対流有効位置エネルギー)の区分。**気象一般で広く使われている区分**をそのまま示すもので、
+// 熱気球が飛べる/飛べないの基準ではない(そのような基準は確認できていないため作らない)。
+// CAPEは「大気がどれだけ対流を起こしうるか」という潜在的なエネルギーであり、
+// 値が大きくても、きっかけがなければ実際に雷雨になるとは限らない点に注意
+function capeCategory(v) {
+  if (v < 1000) return '弱い不安定';
+  if (v < 2500) return '中程度の不安定';
+  if (v < 4000) return '強い不安定';
+  return '極めて強い不安定';
+}
+
+// 直前に取得した気象データ。閾値を変えたときに再取得せず表示し直すために持っておく。
+// (宣言はrenderWeatherConditionsより前に置く。過去にDIURNALで宣言順による
+//  「初期化前アクセス」でスクリプトが停止する不具合を出したため)
+let lastWeatherData = null;
+
+// 気象条件(風・ガスト・視程・天気・降水)を表示する。第1段階(2026-08-05実装、同日方針変更)。
+// **表示するだけ**で、風の計算やフライトの挙動には一切影響させない。
+//
+// 当初はガスト15kt・視程5000mを閾値にして合否を表示していたが、**この数値には実務的な根拠がなく**、
+// 根拠のない基準をあたかも基準であるかのように見せることになるため取りやめた
+// (熱気球は早朝・夕凪の穏やかな風で飛ぶもので、ガストはできるだけない方が望ましいが、
+//  「何ktから飛べない」という明確な基準は現状ない、というユーザーの実務知識による)。
+// 現在は**合否を判定せず、数値を示して注意を促すだけ**にしている。
+// 目安の数値は既定では設定せず、利用者が自分で入れたときだけ印を付ける
+// (理念「誤情報で混乱を生まない」と対応)。
+//
+// ガストは単独では意味が取りにくいため、**平均風速と並べて表示**する
+// (平均4ktでガスト5ktなら穏やか、平均4ktでガスト13ktなら荒れている、という読み方)。
+//
+// 当初は「平均との差」も行として出していたが、2026-08-05に外した。
+// 熱気球が飛ぶのは平均風速が小さいとき(5m/s≒10kt前後がキャンセルの目安)に限られるため、
+// 平均は常に小さい範囲に収まり、**差はガストの値とほぼ同じ動きをする**。
+// 独立した情報をほとんど持たない行を増やすと、かえって読み取る項目が増えて分かりにくくなるため、
+// 平均とガストの2つを並べるだけにした
+function renderWeatherConditions(data, idx) {
+  const out = document.getElementById('wx-result');
+  if (!out) return;
+  lastWeatherData = { data, idx }; // 目安の変更時に再描画できるよう保持しておく
+  const h = data.hourly || {};
+  const at = (name) => (h[name] ? h[name][idx] : null);
+
+  const meanKt = at('wind_speed_10m');   // wind_speed_unit=kn を指定しているのでノット
+  const gustKt = at('wind_gusts_10m');
+  const visM = at('visibility');
+  const code = at('weather_code');
+  const precip = at('precipitation');
+  const cape = at('cape');
+
+  // 空欄なら「目安なし」。0や負数も目安として扱わない
+  const readLimit = (id) => {
+    const raw = document.getElementById(id).value.trim();
+    if (raw === '') return null;
+    const v = Number(raw);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  };
+  const gustLimit = readLimit('wx-gust');
+  const visLimit = readLimit('wx-vis');
+
+  const marks = [];
+  const lines = [`[気象条件 ${data.hourly.time[idx]} 時点(Open-Meteo)]`, ''];
+
+  lines.push(`  地上風(10m)の平均: ${meanKt == null ? '—' : meanKt.toFixed(1) + ' kt'}`);
+  if (gustKt == null) {
+    lines.push('  ガスト(瞬間的に強く吹く風): 取得できませんでした');
+  } else {
+    const over = gustLimit != null && gustKt >= gustLimit;
+    lines.push(`  ガスト(瞬間的に強く吹く風): ${gustKt.toFixed(1)} kt${over ? `  ← 設定した目安(${gustLimit}kt)以上` : ''}`);
+    if (over) marks.push('ガスト');
+  }
+
+  lines.push('');
+  if (visM == null) {
+    lines.push('  視程: 取得できませんでした');
+  } else {
+    const low = visLimit != null && visM <= visLimit;
+    lines.push(`  視程: ${(visM / 1000).toFixed(1)} km${low ? `  ← 設定した目安(${(visLimit / 1000).toFixed(1)}km)以下` : ''}`);
+    if (low) marks.push('視程');
+  }
+
+  const label = (code == null) ? '取得できませんでした' : (WMO_LABELS[code] || `コード${code}`);
+  lines.push(`  天気: ${label}`);
+  if (precip != null) {
+    lines.push(`  降水量: ${precip.toFixed(1)} mm/h${precip > 0 ? '  ← 降水あり' : ''}`);
+    if (precip > 0) marks.push('降水');
+  }
+
+  // CAPE(第2段階、2026-08-05)。区分は気象一般で使われるものを示すだけで、
+  // 熱気球の可否基準ではない(そのような基準は確認できていない)
+  if (cape != null) {
+    const capeLimit = readLimit('wx-cape');
+    const over = capeLimit != null && cape >= capeLimit;
+    lines.push('');
+    lines.push(`  大気の不安定さ(CAPE): ${cape.toFixed(0)} J/kg` +
+      `(気象一般の区分では「${capeCategory(cape)}」)${over ? `  ← 設定した目安(${capeLimit})以上` : ''}`);
+    if (over) marks.push('CAPE');
+  }
+
+  lines.push('');
+  lines.push('熱気球は早朝や夕凪の穏やかな風のときに飛びます。ガストはできるだけない方が望ましいですが、');
+  lines.push('「何ktから飛べない」という明確な基準はないため、SORAでは合否を判定していません。');
+  if (marks.length) lines.push(`(自分で設定した目安に達した項目: ${marks.join('・')})`);
+
+  // 合否は出さないので、枠の色は付けない(判定しているように見えてしまうため)
+  out.classList.remove('judge-go', 'judge-cancel');
+  out.textContent = lines.join('\n');
+}
+// 閾値を変えたときも、直前に取得したデータで表示し直せるようにする
+['wx-gust', 'wx-vis', 'wx-cape'].forEach((id) => {
+  document.getElementById(id).addEventListener('input', () => {
+    if (lastWeatherData) renderWeatherConditions(lastWeatherData.data, lastWeatherData.idx);
+  });
+});
 
 function renderDevEditorRows(rows) {
   document.getElementById('wind-editor-dev').innerHTML = rows.map((r) =>
