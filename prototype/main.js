@@ -1028,7 +1028,9 @@ const REALDATA_PRESSURE_VARS = ['1000hPa', '925hPa', '850hPa', '700hPa', '500hPa
 // (実測: 変数を足してもHTTPリクエストは1回のまま、レスポンスは約2.5KB増のみ)。
 // いずれも表示するだけで、風の計算・フライトの挙動には影響させない
 const REALDATA_WX_VARS = ['wind_gusts_10m', 'visibility', 'weather_code', 'precipitation', 'cape',
-  'boundary_layer_height'];
+  'boundary_layer_height',
+  // 第4段階(2026-08-06): 日周期変動の背景となる地表の加熱状況
+  'shortwave_radiation', 'temperature_2m', 'cloud_cover'];
 // 第3段階(2026-08-05): 逆転層の検出に使う気圧面の気温。下から順に並べておく
 const REALDATA_TEMP_LEVELS = ['1000hPa', '975hPa', '950hPa', '925hPa', '900hPa', '850hPa'];
 async function fetchRealWindToAllPibalRows() {
@@ -1259,6 +1261,22 @@ function renderWeatherConditions(data, idx) {
     lines.push(`  境界層高度: ${blhM.toFixed(0)} m(${(blhM * M2FT).toFixed(0)} ft)`);
     lines.push(`    地表の影響が及ぶ高さの目安。日中は厚く、夜間〜早朝は薄くなる`);
     lines.push(`    現在の「地上層の厚み」設定: ${windCalcReadParams().layerFt} ft（下のボタンで置き換えられます）`);
+  }
+
+  // 第4段階(2026-08-06): 地表の加熱状況。日周期変動の「背景」を見るための参考表示。
+  // 実データで確認したところ、地上風との相関は日射量が0.638、境界層高度が0.907で、
+  // **境界層高度のほうが明らかに良い予測因子**だった(日射のピークは13時だが風のピークは15時で
+  // 2時間遅れる。日射は原因、境界層高度は蓄積された結果で、風が応答するのは後者のため)。
+  // そのためこれらは日周期係数の計算には使わず、状況を読むための参考として表示するにとどめる
+  const rad = at('shortwave_radiation');
+  const temp2m = at('temperature_2m');
+  const cloud = at('cloud_cover');
+  if (rad != null || temp2m != null || cloud != null) {
+    lines.push('');
+    lines.push('  [地表の加熱状況(日周期変動の背景)]');
+    if (temp2m != null) lines.push(`    気温(2m): ${temp2m.toFixed(1)} ℃`);
+    if (rad != null) lines.push(`    日射量: ${rad.toFixed(0)} W/m²(地表がどれだけ温められているか)`);
+    if (cloud != null) lines.push(`    雲量: ${cloud.toFixed(0)} %(多いほど日射を遮る)`);
   }
 
   const inv = detectInversions(h, idx, elevMOf(data));
@@ -2130,6 +2148,40 @@ document.getElementById('wc-dawntime').addEventListener('input', recomputeDiurna
 document.getElementById('wc-dusktime').addEventListener('input', recomputeDiurnalTimes);
 recomputeDiurnalTimes(); // 日出・日没の取得を待たずに、既定時刻(07:00/16:00)でボタンを表示しておく
 
+// 境界層高度(BLH)から日周期係数を導出する(2026-08-06)。
+//
+// 日周期係数は「気圧配置モデルの風のうち、どれだけが地上に届くか」を表す。
+// 境界層が浅い早朝は地表付近が上空と切り離されて風が弱く、厚い日中〜夕刻は上空の風が
+// 地上へ降りてきて強まる、という物理に対応する。
+//
+// 実データ72時間分(佐賀、3日)を log-log で回帰したところ
+// **風速 ∝ BLH^0.436**(相関0.887)という関係が得られたため、
+// 係数 = (BLH / 基準BLH)^指数(上限1)とする。基準・指数とも画面で調整できる。
+//
+// 選んだ離陸時刻のBLHを使う点が重要。1日分の時間別データを取得しているので、
+// 「今」ではなく実際に飛ぶ時刻の値を引ける
+function blhAtTime(t) {
+  if (!lastWeatherData || !t) return null;
+  const h = lastWeatherData.data.hourly;
+  if (!h || !h.boundary_layer_height) return null;
+  // hourly.time はGMT(timezone未指定で取得しているため)。絶対時刻で最も近いものを選ぶ
+  const target = t.getTime();
+  let best = -1, bestDiff = Infinity;
+  for (let i = 0; i < h.time.length; i++) {
+    const d = Math.abs(new Date(`${h.time[i]}:00Z`).getTime() - target);
+    if (d < bestDiff) { bestDiff = d; best = i; }
+  }
+  if (best < 0) return null;
+  const v = h.boundary_layer_height[best];
+  return v == null ? null : { blhM: v, time: h.time[best] };
+}
+
+function blhToDiurnalCoef(blhM) {
+  const ref = Math.max(1, Number(document.getElementById('wc-blhref').value) || 1800);
+  const exp = Number(document.getElementById('wc-blhexp').value) || 0.44;
+  return Math.min(1, Math.pow(Math.max(0, blhM) / ref, exp));
+}
+
 function diurnalReadParams() {
   return {
     dawnCoef: Number(document.getElementById('wc-dawn').value) || 0,
@@ -2152,7 +2204,8 @@ function setDiurnalMode(mode) {
 }
 document.getElementById('diurnal-dawn').addEventListener('click', () => setDiurnalMode('dawn'));
 document.getElementById('diurnal-dusk').addEventListener('click', () => setDiurnalMode('dusk'));
-['wc-dawn', 'wc-duskmean', 'wc-duskwidth', 'wc-cancelc', 'wc-cancelw'].forEach((id) => {
+['wc-dawn', 'wc-duskmean', 'wc-duskwidth', 'wc-cancelc', 'wc-cancelw',
+  'wc-blhref', 'wc-blhexp'].forEach((id) => {
   document.getElementById(id).addEventListener('input', updateDiurnalJudgment);
 });
 
@@ -2192,6 +2245,12 @@ function updateDiurnalJudgment() {
   const label = DIURNAL.mode === 'dawn' ? '早朝' : '夕方';
   const startTime = DIURNAL.mode === 'dawn' ? DIURNAL.dawnTime : DIURNAL.duskTime;
   const vfrWarning = diurnalVfrWarning(startTime);
+
+  // 離陸時刻の境界層高度から導出した係数を、参考として併記する(適用は別途ボタンで)
+  const blh = blhAtTime(startTime);
+  const suggested = blh ? blhToDiurnalCoef(blh.blhM) : null;
+  document.getElementById('diurnal-apply-blh').disabled = (suggested == null);
+
   out.classList.toggle('judge-go', !canceled);
   out.classList.toggle('judge-cancel', canceled);
   out.textContent = [
@@ -2200,6 +2259,10 @@ function updateDiurnalJudgment() {
     ``,
     `  気圧配置モデルの地上風(生値): ${groundWind.speedKt.toFixed(1)}kt`,
     `  日周期係数: ×${coef.toFixed(2)}${DIURNAL.mode === 'dusk' ? `(平均${dp.duskMean.toFixed(2)}±${dp.duskWidth.toFixed(2)}のランダム)` : '(固定)'}`,
+    ...(suggested != null
+      ? [`    参考: この時刻の境界層高度 ${blh.blhM.toFixed(0)}m から求めると ×${suggested.toFixed(2)}` +
+         `(下のボタンで適用できます)`]
+      : ['    参考: 「実データ取得(全高度)」を押すと、境界層高度からの係数も表示します']),
     `  日周期反映後の地上風: ${diurnalKt.toFixed(1)}kt`,
     `  キャンセル確率: ${(cancelProb * 100).toFixed(0)}%(中心${dp.cancelCenter}kt、幅${dp.cancelWidth}kt)`,
     `  抽選値: ${DIURNAL.roll.toFixed(2)} ${canceled ? '<' : '≥'} ${cancelProb.toFixed(2)} → ${canceled ? 'キャンセル' : '決行'}`,
@@ -2208,6 +2271,23 @@ function updateDiurnalJudgment() {
     `※ 実際のフライトの風には影響せず、判定結果の表示のみです。`,
   ].join('\n');
 }
+
+// 境界層高度から求めた日周期係数を、選択中の時間帯(早朝/夕方)の係数欄に適用する。
+// 第3段階の地上層厚みと同じく、**押したときだけ**変わる。既定では手入力の仮値のまま
+document.getElementById('diurnal-apply-blh').addEventListener('click', () => {
+  if (!DIURNAL.mode) return;
+  const t = DIURNAL.mode === 'dawn' ? DIURNAL.dawnTime : DIURNAL.duskTime;
+  const blh = blhAtTime(t);
+  if (!blh) return;
+  const coef = blhToDiurnalCoef(blh.blhM);
+  const id = DIURNAL.mode === 'dawn' ? 'wc-dawn' : 'wc-duskmean';
+  const before = document.getElementById(id).value;
+  document.getElementById(id).value = coef.toFixed(2);
+  updateDiurnalJudgment();
+  document.getElementById('diurnal-apply-blh-note').textContent =
+    `${DIURNAL.mode === 'dawn' ? '早朝係数' : '夕方係数(平均)'}を ${before} → ${coef.toFixed(2)} に変更しました` +
+    `(${hhmm(t)}の境界層高度 ${blh.blhM.toFixed(0)}m から算出)`;
+});
 
 // ---- 隠しコマンド(Wキー、devMode専用): フライト中の計算過程デバッグ表示 ----
 // ブリーフィング画面の「風の計算(実験)」パネルと同じ内容を、飛行中の現在位置でリアルタイムに表示する
