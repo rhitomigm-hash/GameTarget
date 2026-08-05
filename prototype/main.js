@@ -1027,7 +1027,10 @@ const REALDATA_PRESSURE_VARS = ['1000hPa', '925hPa', '850hPa', '700hPa', '500hPa
 // 気象条件(第1段階、2026-08-05)。上の風と同じリクエストに相乗りするため、通信回数は増えない
 // (実測: 変数を足してもHTTPリクエストは1回のまま、レスポンスは約2.5KB増のみ)。
 // いずれも表示するだけで、風の計算・フライトの挙動には影響させない
-const REALDATA_WX_VARS = ['wind_gusts_10m', 'visibility', 'weather_code', 'precipitation', 'cape'];
+const REALDATA_WX_VARS = ['wind_gusts_10m', 'visibility', 'weather_code', 'precipitation', 'cape',
+  'boundary_layer_height'];
+// 第3段階(2026-08-05): 逆転層の検出に使う気圧面の気温。下から順に並べておく
+const REALDATA_TEMP_LEVELS = ['1000hPa', '975hPa', '950hPa', '925hPa', '900hPa', '850hPa'];
 async function fetchRealWindToAllPibalRows() {
   const status = document.getElementById('wind-realdata-status');
   const ll = (devLaunchSel.x !== null) ? localXZToLonLat(devLaunchSel.x, devLaunchSel.z) : AREA;
@@ -1037,6 +1040,7 @@ async function fetchRealWindToAllPibalRows() {
       ...REALDATA_HEIGHT_VARS.flatMap((h) => [`wind_speed_${h}`, `wind_direction_${h}`]),
       ...REALDATA_PRESSURE_VARS.flatMap((p) => [`wind_speed_${p}`, `wind_direction_${p}`, `geopotential_height_${p}`]),
       ...REALDATA_WX_VARS,
+      ...REALDATA_TEMP_LEVELS.flatMap((p) => [`temperature_${p}`, `geopotential_height_${p}`]),
     ].join(',');
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${ll.lat}&longitude=${ll.lon}` +
       `&hourly=${hourlyVars}&wind_speed_unit=kn&forecast_days=1`;
@@ -1133,6 +1137,31 @@ function capeCategory(v) {
   return '極めて強い不安定';
 }
 
+const elevMOf = (data) => Number(data.elevation) || 0;
+
+// 気圧面の気温から逆転層(上のほうが暖かい層)を見つける。第3段階(2026-08-05)。
+// 逆転層があると上下の空気が混ざりにくくなり、その境目で風向・風速が変わりやすい。
+// **検出して表示するだけ**で、風の計算には使わない
+function detectInversions(hourly, idx, elevM) {
+  const levels = [];
+  for (const p of REALDATA_TEMP_LEVELS) {
+    const t = hourly[`temperature_${p}`] ? hourly[`temperature_${p}`][idx] : null;
+    const gh = hourly[`geopotential_height_${p}`] ? hourly[`geopotential_height_${p}`][idx] : null;
+    if (t == null || gh == null) continue;
+    if (gh < elevM) continue; // 地面より下の気圧面は無視する
+    levels.push({ ft: gh * M2FT, t });
+  }
+  levels.sort((a, b) => a.ft - b.ft);
+  const inversions = [];
+  for (let i = 0; i < levels.length - 1; i++) {
+    // 上の層のほうが暖かければ逆転層
+    if (levels[i + 1].t > levels[i].t) {
+      inversions.push({ fromFt: levels[i].ft, toFt: levels[i + 1].ft });
+    }
+  }
+  return { levels, inversions };
+}
+
 // 直前に取得した気象データ。閾値を変えたときに再取得せず表示し直すために持っておく。
 // (宣言はrenderWeatherConditionsより前に置く。過去にDIURNALで宣言順による
 //  「初期化前アクセス」でスクリプトが停止する不具合を出したため)
@@ -1220,6 +1249,28 @@ function renderWeatherConditions(data, idx) {
     if (over) marks.push('CAPE');
   }
 
+  // 第3段階(2026-08-05): 境界層高度と逆転層。**既定では風の計算に使わない**。
+  // 境界層高度は「地上層の厚み」に適用できるが、適用するかどうかはボタンで明示的に選ばせる
+  const blhM = at('boundary_layer_height');
+  lastWeatherData.blhFt = (blhM == null) ? null : blhM * M2FT;
+  document.getElementById('wx-apply-blh').disabled = (blhM == null);
+  if (blhM != null) {
+    lines.push('');
+    lines.push(`  境界層高度: ${blhM.toFixed(0)} m(${(blhM * M2FT).toFixed(0)} ft)`);
+    lines.push(`    地表の影響が及ぶ高さの目安。日中は厚く、夜間〜早朝は薄くなる`);
+    lines.push(`    現在の「地上層の厚み」設定: ${windCalcReadParams().layerFt} ft（下のボタンで置き換えられます）`);
+  }
+
+  const inv = detectInversions(h, idx, elevMOf(data));
+  if (inv.levels.length >= 2) {
+    lines.push('');
+    lines.push(`  気温の高度変化: ${inv.levels.map((l) => `${l.ft.toFixed(0)}ft ${l.t.toFixed(1)}℃`).join(' / ')}`);
+    lines.push(inv.inversions.length
+      ? `    逆転層あり: ${inv.inversions.map((v) => `${v.fromFt.toFixed(0)}〜${v.toFt.toFixed(0)}ft`).join('、')}` +
+        `(上のほうが暖かい層。空気が混ざりにくく、その境目で風が変わりやすい)`
+      : '    逆転層は見つかりませんでした(高いほど気温が下がる、通常の状態)');
+  }
+
   lines.push('');
   lines.push('熱気球は早朝や夕凪の穏やかな風のときに飛びます。ガストはできるだけない方が望ましいですが、');
   lines.push('「何ktから飛べない」という明確な基準はないため、SORAでは合否を判定していません。');
@@ -1234,6 +1285,25 @@ function renderWeatherConditions(data, idx) {
   document.getElementById(id).addEventListener('input', () => {
     if (lastWeatherData) renderWeatherConditions(lastWeatherData.data, lastWeatherData.idx);
   });
+});
+
+// 境界層高度を「地上層の厚み」に適用する(第3段階、2026-08-05)。
+// **押したときだけ**風の計算が変わる。既定では従来の仮値(1000ft)のまま何も変わらない。
+// 自動適用にしなかった理由: 実データでは早朝230ft・夕刻5184ftと20倍以上の差があり、
+// そのまま入れると早朝は気圧配置モデルが、夕刻はパイバルがほぼ効かなくなってしまう。
+// また SORAの「地上層」は2つのモデルを滑らかにつなぐブレンド区間であって、
+// 気象学の境界層と同一の概念ではないため、置き換えの妥当性が確認できていない。
+// そのため「試せるようにはするが、既定の挙動は変えない」形にした
+document.getElementById('wx-apply-blh').addEventListener('click', () => {
+  if (!lastWeatherData || lastWeatherData.blhFt == null) return;
+  const ft = Math.round(lastWeatherData.blhFt);
+  const before = windCalcReadParams().layerFt;
+  document.getElementById('wc-layer').value = ft;
+  updateWindCalc();
+  updateDiurnalJudgment();
+  renderWeatherConditions(lastWeatherData.data, lastWeatherData.idx); // 表示中の「現在の設定」を更新
+  document.getElementById('wx-apply-blh-note').textContent =
+    `地上層の厚みを ${before}ft → ${ft}ft に変更しました(元に戻すには上の入力欄を直接編集してください)`;
 });
 
 function renderDevEditorRows(rows) {
