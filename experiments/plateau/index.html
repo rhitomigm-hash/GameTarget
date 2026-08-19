@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PLATEAU 重ね合わせ検証(第0段階)</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0d1620;
+    font-family: system-ui, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  canvas { display: block; }
+  #panel {
+    position: fixed; top: 12px; left: 12px; width: 340px; max-height: calc(100% - 24px);
+    overflow-y: auto; background: rgba(13, 22, 32, 0.88); color: #dce8f2;
+    border: 1px solid #24384c; border-radius: 8px; padding: 12px 14px;
+    font-size: 12px; line-height: 1.6;
+  }
+  #panel h1 { font-size: 13px; margin: 0 0 8px; color: #9ecfff; }
+  #panel h2 { font-size: 12px; margin: 12px 0 4px; color: #9ecfff; font-weight: 600; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  .row label { flex: none; }
+  input[type=range] { flex: 1; min-width: 0; }
+  button { background: #1b2c3d; color: #dce8f2; border: 1px solid #35506b;
+    border-radius: 4px; padding: 3px 8px; cursor: pointer; font-size: 12px; }
+  button:hover { background: #24384c; }
+  #log { color: #b9d4ea; min-height: 1.6em; }
+  #stats { color: #cfe0ee; }
+  #estimate { color: #ffd88a; }
+  .warn { color: #ff9a7a; }
+  .muted { color: #7d95aa; font-size: 11px; }
+  #fps { position: fixed; top: 12px; right: 12px; background: rgba(13, 22, 32, 0.88);
+    color: #9ecfff; border: 1px solid #24384c; border-radius: 6px;
+    padding: 4px 10px; font-size: 12px; font-variant-numeric: tabular-nums; }
+  #credit { position: fixed; bottom: 8px; left: 12px; right: 12px;
+    color: #8fa8bd; font-size: 10.5px; line-height: 1.5; text-shadow: 0 1px 2px #000; }
+  #credit a { color: #9ecfff; }
+</style>
+</head>
+<body>
+
+<div id="fps">– fps</div>
+
+<div id="panel">
+  <h1>PLATEAU 重ね合わせ検証(第0段階)</h1>
+  <div class="muted">ゲーム本体(prototype/)には影響しない検証用ページ</div>
+
+  <h2>対象</h2>
+  <div id="site">–</div>
+
+  <h2>状態</h2>
+  <div id="log">起動中…</div>
+
+  <h2>高さ基準の補正(ジオイド高)</h2>
+  <div class="muted">
+    PLATEAU は楕円体高、地理院DEM は標高。その差を引いて地面に合わせる。
+  </div>
+  <div id="estimate">–</div>
+  <div class="row">
+    <label for="offset">補正</label>
+    <input id="offset" type="range" min="0" max="60" step="0.1" value="36">
+    <span id="offsetOut">36.0 m</span>
+  </div>
+  <div class="row">
+    <button id="reset">自動推定値に戻す</button>
+  </div>
+
+  <h2>表示</h2>
+  <div class="row"><label><input id="wire" type="checkbox"> 建物をワイヤフレーム</label></div>
+  <div class="row"><label><input id="hideTerrain" type="checkbox"> 地形を隠す</label></div>
+
+  <h2>計測</h2>
+  <div id="stats">–</div>
+
+  <h2>切り替え</h2>
+  <div class="muted">
+    詳細度: <span id="lodLinks"></span><br>
+    LOD1 は高さだけの箱で、仕様上テクスチャを持たない。写真を貼るなら LOD2。<br><br>
+    地点: <span id="cityLinks"></span><br><br>
+    <code>?lon=&amp;lat=</code> で基準点、<code>?r=</code> で読み込み半径(m)、
+    <code>?n=</code> でタイル数上限、<code>?lod=</code> で詳細度。
+  </div>
+</div>
+
+<div id="credit">
+  出典: 3D都市モデル(Project PLATEAU)／国土交通省(CC BY 4.0)・
+  国土地理院タイル(標高タイル、全国最新写真)。
+  本ページは検証用の表示であり、航空機の運航等には使用できません。
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="./main.js"></script>
+
+</body>
+</html>
