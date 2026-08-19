@@ -476,10 +476,16 @@
       <div class="b-sub">気象条件(実データ・注意喚起) — パイバルの「実データ取得(全高度)」と同時に取得します</div>
       <pre class="windcalc-result" id="wx-result">「実データ取得(全高度)」を押すと、その時点の風・ガスト・視程・天気をここに表示します。</pre>
       <div class="windcalc-params">
-        <label>ガストの目安(kt・任意) <input type="number" id="wx-gust" step="1" placeholder="未設定"></label>
-        <label>視程の目安(m・任意) <input type="number" id="wx-vis" step="500" placeholder="未設定"></label>
-        <label>CAPEの目安(J/kg・任意) <input type="number" id="wx-cape" step="100" placeholder="未設定"></label>
+        <label>ガストの目安(kt・任意) <input type="number" id="wx-gust" step="1" placeholder="未設定(基準なし)"></label>
+        <label>視程の目安(m・任意) <input type="number" id="wx-vis" step="500" value="1500"></label>
+        <label>CAPEの目安(J/kg・任意) <input type="number" id="wx-cape" step="100" placeholder="未設定(基準なし)"></label>
+        <label>気温と露点の差の目安(℃・任意) <input type="number" id="wx-spread" step="0.5" placeholder="未設定(基準なし)"></label>
       </div>
+      <div class="pressure-tools">
+        <button id="wx-guide" type="button" class="pmode-btn">目安の決め方(この地点の実データを調べる)</button>
+        <span id="wx-guide-status" style="font-size:12px;color:#9ecfff;"></span>
+      </div>
+      <pre class="windcalc-result" id="wx-guide-result" style="display:none;"></pre>
       <div class="pressure-tools">
         <button id="wx-apply-blh" type="button" class="pmode-btn" disabled>境界層高度を「地上層の厚み」に適用する</button>
         <span id="wx-apply-blh-note" style="font-size:12px;color:#9ecfff;"></span>
@@ -497,8 +503,26 @@
         値が大きいほど雷雨や活発な熱気泡(サーマル)が起こりやすい状態を意味しますが、
         <b>あくまで潜在的なエネルギーであり、きっかけがなければ実際に荒れるとは限りません</b>。
         括弧内の区分は気象一般で使われるもので、熱気球の可否基準ではありません。<br>
-        上の欄に数値を入れると、その値を超えたときに印を付けます(自分の目安を試すための機能で、
-        既定では何も設定していません)。<br>
+        <b>湿りの状態</b>(相対湿度・露点温度)は、視程が悪くなりやすいかを読むための参考です。
+        気温と露点の差が小さいほど空気は飽和に近づきます。実データ(3地点・60日)で確かめたところ、
+        差が小さいほど視程が悪い傾向はありました(佐賀では差0.5℃未満で視程の中央値2.6km、
+        3℃以上で27.1km)。ただし<b>その効き方は地点によって大きく違い</b>、
+        今後の視程低下を先読みできるかを調べると、佐賀・佐久では効いた一方
+        <b>渡良瀬ではほとんど効きませんでした</b>。先読みできる時間も1〜2時間程度しかありません。
+        そのためSORAでは<b>霧の判定も予測もせず</b>、数値を示すだけにしています。<br>
+        上の欄に数値を入れると、その値に達したとき(視程と気温・露点の差は下回ったとき)に
+        印を付けます。<br>
+        <b>初期値を入れているのは視程だけです。</b>1500mは
+        <b>航空法施行規則第5条の有視界気象状態</b>で、高度3000m未満・管制区・管制圏・情報圏以外の
+        空域を飛ぶ場合に定められた飛行視程です(熱気球も航空法上の航空機にあたります)。
+        <b>管制圏・情報圏の内側では5000m</b>になるなど、飛行場所によって適用される値が変わるため、
+        必要に応じて書き換えてください。<br>
+        <b>ガスト・CAPE・気温と露点の差には初期値を入れていません。</b>
+        いずれも熱気球の可否を判断できる基準が存在しないためです。
+        何を入れればよいか分からないときは<b>「目安の決め方」</b>を押してください。
+        その地点の直近60日のうち、熱気球が飛ぶ時間帯(5〜8時・16〜19時)の実データを集計し、
+        <b>どのくらいの値が普通で、どこからが珍しいか</b>を示します。
+        安全の基準ではなく、「いつもより荒れている日に印が付く」ように目安を選ぶための材料です。<br>
         <b style="color:#ffca5b;">※ これはゲーム内の参考値です。</b>
         実際のフライトの可否判断には使えません。実際に飛ぶ際は、必ず公式の気象情報と
         現地の目視で判断してください。

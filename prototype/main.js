@@ -1030,7 +1030,9 @@ const REALDATA_PRESSURE_VARS = ['1000hPa', '925hPa', '850hPa', '700hPa', '500hPa
 const REALDATA_WX_VARS = ['wind_gusts_10m', 'visibility', 'weather_code', 'precipitation', 'cape',
   'boundary_layer_height',
   // 第4段階(2026-08-06): 日周期変動の背景となる地表の加熱状況
-  'shortwave_radiation', 'temperature_2m', 'cloud_cover'];
+  'shortwave_radiation', 'temperature_2m', 'cloud_cover',
+  // 第5段階(2026-08-06): 湿りの状態(視程が悪くなりやすいかの参考)
+  'relative_humidity_2m', 'dew_point_2m'];
 // 第3段階(2026-08-05): 逆転層の検出に使う気圧面の気温。下から順に並べておく
 const REALDATA_TEMP_LEVELS = ['1000hPa', '975hPa', '950hPa', '925hPa', '900hPa', '850hPa'];
 async function fetchRealWindToAllPibalRows() {
@@ -1177,7 +1179,12 @@ let lastWeatherData = null;
 // (熱気球は早朝・夕凪の穏やかな風で飛ぶもので、ガストはできるだけない方が望ましいが、
 //  「何ktから飛べない」という明確な基準は現状ない、というユーザーの実務知識による)。
 // 現在は**合否を判定せず、数値を示して注意を促すだけ**にしている。
-// 目安の数値は既定では設定せず、利用者が自分で入れたときだけ印を付ける
+//
+// 目安の数値は、**出典のある項目だけ初期値を入れる**(2026-08-06決定)。
+// 現在初期値があるのは視程の1500mのみで、これは航空法施行規則第5条の有視界気象状態
+// (高度3000m未満・管制区・管制圏・情報圏以外の空域)に定められた飛行視程という法令上の根拠がある。
+// 管制圏・情報圏の内側では5000mになるなど飛行場所で変わるため、書き換えられるようにしてある。
+// ガスト・CAPE・気温と露点の差は、熱気球の可否を判断できる基準が存在しないため**空欄のまま**
 // (理念「誤情報で混乱を生まない」と対応)。
 //
 // ガストは単独では意味が取りにくいため、**平均風速と並べて表示**する
@@ -1229,7 +1236,7 @@ function renderWeatherConditions(data, idx) {
     lines.push('  視程: 取得できませんでした');
   } else {
     const low = visLimit != null && visM <= visLimit;
-    lines.push(`  視程: ${(visM / 1000).toFixed(1)} km${low ? `  ← 設定した目安(${(visLimit / 1000).toFixed(1)}km)以下` : ''}`);
+    lines.push(`  視程: ${(visM / 1000).toFixed(1)} km${low ? `  ← 目安(${(visLimit / 1000).toFixed(1)}km)以下` : ''}`);
     if (low) marks.push('視程');
   }
 
@@ -1279,6 +1286,41 @@ function renderWeatherConditions(data, idx) {
     if (cloud != null) lines.push(`    雲量: ${cloud.toFixed(0)} %(多いほど日射を遮る)`);
   }
 
+  // 第5段階(2026-08-06): 湿りの状態(相対湿度・露点温度)。**表示するだけ**で風の計算には使わない。
+  // 気温と露点の差(スプレッド)が小さいほど空気が飽和に近く、視程が悪くなりやすい。
+  //
+  // 実装前に3地点×直近60日の実データで確かめた結果、以下が分かっている:
+  // ・視程との関係自体はある(佐賀ではスプレッド0.5℃未満で視程の中央値2.6km、
+  //   3℃以上では27.1km。5km未満になる割合は70.2%対2.6%)
+  // ・**ただし「予兆」としての効き方は地点によって大きく違う**。現在の視程が10km以上ある時点から
+  //   3時間以内に5km未満へ落ちる割合は、佐賀・佐久ではスプレッドが小さいほど高くなったが
+  //   (37.8%/30.3% 対 5.0%/6.5%)、渡良瀬では単調にならずほとんど効かなかった(9.3% 対 7.6%)
+  // ・**先読みできる時間はごく短い**。相関のピークは1〜2時間先(0.67)で同時刻(0.65)とほぼ同じ
+  // ・相対湿度と露点差は実質同じ情報(視程との相関は -0.675 対 0.654)
+  // ・風の弱さとの交互作用は確認できなかった(早朝スプレッド2未満で、
+  //   風速3kt未満でも6kt以上でも視程5km未満の割合は約40%で差がなかった)
+  //
+  // 以上より、**霧の判定も予測もしない**。数値を示し、地点差があることを併せて伝えるにとどめる
+  // (理念「根拠のない数値を基準のように見せない」)
+  const rh = at('relative_humidity_2m');
+  const dew = at('dew_point_2m');
+  if (rh != null || dew != null) {
+    lines.push('');
+    lines.push('  [湿りの状態(視程が悪くなりやすいかの参考)]');
+    if (rh != null) lines.push(`    相対湿度: ${rh.toFixed(0)} %`);
+    if (dew != null) lines.push(`    露点温度: ${dew.toFixed(1)} ℃(この温度まで下がると空気中の水蒸気が飽和する)`);
+    if (dew != null && temp2m != null) {
+      const spread = temp2m - dew;
+      const spreadLimit = readLimit('wx-spread');
+      const under = spreadLimit != null && spread <= spreadLimit;
+      lines.push(`    気温との差: ${spread.toFixed(1)} ℃(小さいほど飽和に近い)` +
+        `${under ? `  ← 設定した目安(${spreadLimit}℃)以下` : ''}`);
+      if (under) marks.push('気温と露点の差');
+      lines.push('    差が小さいほど視程が悪くなりやすい傾向はありますが、');
+      lines.push('    その効き方は地点によって差が大きく、霧の予測としては使えません。');
+    }
+  }
+
   const inv = detectInversions(h, idx, elevMOf(data));
   if (inv.levels.length >= 2) {
     lines.push('');
@@ -1292,18 +1334,111 @@ function renderWeatherConditions(data, idx) {
   lines.push('');
   lines.push('熱気球は早朝や夕凪の穏やかな風のときに飛びます。ガストはできるだけない方が望ましいですが、');
   lines.push('「何ktから飛べない」という明確な基準はないため、SORAでは合否を判定していません。');
-  if (marks.length) lines.push(`(自分で設定した目安に達した項目: ${marks.join('・')})`);
+  if (marks.length) lines.push(`(目安に達した項目: ${marks.join('・')})`);
 
   // 合否は出さないので、枠の色は付けない(判定しているように見えてしまうため)
   out.classList.remove('judge-go', 'judge-cancel');
   out.textContent = lines.join('\n');
 }
 // 閾値を変えたときも、直前に取得したデータで表示し直せるようにする
-['wx-gust', 'wx-vis', 'wx-cape'].forEach((id) => {
+['wx-gust', 'wx-vis', 'wx-cape', 'wx-spread'].forEach((id) => {
   document.getElementById(id).addEventListener('input', () => {
     if (lastWeatherData) renderWeatherConditions(lastWeatherData.data, lastWeatherData.idx);
   });
 });
+
+// 「目安の決め方」(2026-08-06)。ガスト・CAPE・気温と露点の差は、熱気球の可否を判断できる
+// 基準が存在しないため目安欄を空欄にしているが、それだと**何を入れたらいいか分からない**という
+// 問題が残る。かといって根拠のない数値を初期値として示すことは理念に反する。
+//
+// そこで、基準を示す代わりに**その地点の実データの分布**を示すことにした。
+// 「この地点のこの時期、飛ぶ時間帯では普通どのくらいの値か。どのくらいから珍しいか」であれば、
+// 実測に基づいて言える。利用者は「いつもより荒れている日に印が付く」ように目安を選べる。
+//
+// これが固定値より意味を持つことは実データで確認済み: 飛行時間帯のCAPEの中央値は
+// 佐賀690・渡良瀬160・上士幌0 J/kg と地点で大きく違い、**同じ1000という値でも
+// 地点によって「よくあること」にも「めったにないこと」にもなる**
+const WX_GUIDE_HOURS = [5, 6, 7, 8, 16, 17, 18, 19]; // 熱気球が飛ぶ時間帯(早朝・夕刻)
+function percentile(arr, p) {
+  const s = [...arr].sort((a, b) => a - b);
+  return s[Math.floor((s.length - 1) * p)];
+}
+async function showWeatherGuide() {
+  const status = document.getElementById('wx-guide-status');
+  const out = document.getElementById('wx-guide-result');
+  const ll = (devLaunchSel.x !== null) ? localXZToLonLat(devLaunchSel.x, devLaunchSel.z) : AREA;
+  status.textContent = '調べています…';
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${ll.lat}&longitude=${ll.lon}` +
+      `&hourly=wind_gusts_10m,cape,temperature_2m,dew_point_2m&wind_speed_unit=kn` +
+      `&past_days=60&forecast_days=1&timezone=Asia%2FTokyo`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const h = data.hourly;
+    if (!h || !h.time || !h.time.length) throw new Error('データが取得できませんでした');
+
+    // 飛行時間帯だけを取り出す(日中の値を混ぜると、飛ばない時間帯の荒れた値に引きずられる)
+    const gusts = [], capes = [], spreads = [];
+    for (let i = 0; i < h.time.length; i++) {
+      if (!WX_GUIDE_HOURS.includes(Number(h.time[i].slice(11, 13)))) continue;
+      if (h.wind_gusts_10m[i] != null) gusts.push(h.wind_gusts_10m[i]);
+      if (h.cape[i] != null) capes.push(h.cape[i]);
+      if (h.temperature_2m[i] != null && h.dew_point_2m[i] != null) {
+        spreads.push(h.temperature_2m[i] - h.dew_point_2m[i]);
+      }
+    }
+    if (!gusts.length) throw new Error('飛行時間帯のデータがありませんでした');
+
+    const lines = [];
+    lines.push(`[目安の決め方] ${ll.lat.toFixed(2)}, ${ll.lon.toFixed(2)} の直近60日`);
+    lines.push(`熱気球が飛ぶ時間帯(5〜8時・16〜19時)の${gusts.length}時間分を集計しました。`);
+    lines.push('');
+    lines.push('これは「飛べる/飛べない」の基準ではありません。そのような基準は存在しないためです。');
+    lines.push('この地点のこの時期に「どのくらいの値が普通で、どこからが珍しいか」を示すものです。');
+    lines.push('「いつもより荒れている日に印が付く」ように選ぶ、という使い方を想定しています。');
+    lines.push('');
+
+    lines.push('■ ガストの目安(kt)');
+    lines.push('  瞬間的に強く吹く風。地上風の平均と並べて読み、差が大きいほど荒れています。');
+    lines.push(`  中央値 ${percentile(gusts, 0.5).toFixed(1)}(半分の時間はこれ以下)`);
+    lines.push(`  上位25% ${percentile(gusts, 0.75).toFixed(1)} / 上位10% ${percentile(gusts, 0.9).toFixed(1)}` +
+      ` / この60日の最大 ${percentile(gusts, 1).toFixed(1)}`);
+    lines.push(`  → 4回に1回の頻度で印を付けたいなら ${Math.round(percentile(gusts, 0.75))}、` +
+      `10回に1回なら ${Math.round(percentile(gusts, 0.9))} あたりです。`);
+    lines.push('');
+
+    lines.push('■ CAPEの目安(J/kg)');
+    lines.push('  大気がどれだけ対流を起こしうるかの量。大きいほど雷雨やサーマルが起きやすい状態ですが、');
+    lines.push('  あくまで潜在的なエネルギーで、きっかけがなければ実際に荒れるとは限りません。');
+    lines.push(`  中央値 ${percentile(capes, 0.5).toFixed(0)}` +
+      ` / 上位25% ${percentile(capes, 0.75).toFixed(0)} / 上位10% ${percentile(capes, 0.9).toFixed(0)}` +
+      ` / この60日の最大 ${percentile(capes, 1).toFixed(0)}`);
+    lines.push(`  → 10回に1回の頻度なら ${Math.round(percentile(capes, 0.9) / 50) * 50} あたりです。`);
+    lines.push('  気象一般の区分(1000/2500/4000)は熱気球の基準ではなく、地点によって');
+    lines.push('  「よくあること」にも「めったにないこと」にもなります(この地点の中央値と比べてください)。');
+    lines.push('');
+
+    lines.push('■ 気温と露点の差の目安(℃) ※ この項目だけ「下回ったら」印が付きます');
+    lines.push('  小さいほど空気が飽和に近く、視程が悪くなりやすい傾向があります。');
+    lines.push('  ただし効き方には地点差が大きく、霧の予測としては使えません。');
+    lines.push(`  中央値 ${percentile(spreads, 0.5).toFixed(1)}(半分の時間はこれ以上)`);
+    lines.push(`  下位25% ${percentile(spreads, 0.25).toFixed(1)} / 下位10% ${percentile(spreads, 0.1).toFixed(1)}` +
+      ` / この60日の最小 ${percentile(spreads, 0).toFixed(1)}`);
+    lines.push(`  → 4回に1回の頻度で印を付けたいなら ${percentile(spreads, 0.25).toFixed(1)}、` +
+      `10回に1回なら ${percentile(spreads, 0.1).toFixed(1)} あたりです。`);
+    lines.push('');
+    lines.push('注意: 直近60日だけの集計なので、季節が変わると分布も変わります。');
+    lines.push('また、ここに出るのは「この地点で普通かどうか」であって、安全かどうかではありません。');
+
+    out.textContent = lines.join('\n');
+    out.style.display = '';
+    status.textContent = `${gusts.length}時間分を集計しました。`;
+  } catch (err) {
+    status.textContent = `調べられませんでした: ${err.message}(通信環境をご確認ください)`;
+  }
+}
+document.getElementById('wx-guide').addEventListener('click', showWeatherGuide);
 
 // 境界層高度を「地上層の厚み」に適用する(第3段階、2026-08-05)。
 // **押したときだけ**風の計算が変わる。既定では従来の仮値(1000ft)のまま何も変わらない。
