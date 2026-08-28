@@ -608,7 +608,7 @@
 <div id="help" class="panel">
   <div class="kbd-only">
     <b>Space</b> バーナー(長押し) <b>R</b> リップライン(長押し) <b>M</b> マーカー投下<br>
-    <b>V</b> 視点切替(ゴンドラ/外部) <b>1-4</b> 時間加速 ×1/×2/×4/×8<br>
+    <b>V</b> 視点切替<span id="help-view">(ゴンドラ/外部)</span> <b>1-4</b> 時間加速 ×1/×2/×4/×8<br>
     <b>P</b> パイバル表 表示/非表示 マウスドラッグ: 視点回転 / ホイール: ズーム<br>
   </div>
   <a id="setup-link" href="#" style="color:#9ecfff;">本格モード</a>
@@ -651,6 +651,12 @@
     最新版が遊べる環境は、Instagramでお知らせします。</div>
     <button id="setup-try" type="button" class="howto-try-btn">お試しでやってみる(最新版ではありません)</button>
     <button id="setup-dev" type="button" class="howto-dev-btn">開発途中版(新機能を試す・不安定です)</button>
+    <div class="howto-label">街並み(PLATEAU)</div>
+    <div class="howto-note">実在の建物を重ねて表示します(表示のみ。飛行の挙動は変わりません)。
+    国土交通省が整備した地域だけに出ます。佐賀市・一関・上士幌は未整備のため表示されません。</div>
+    <button id="setup-city1" type="button" class="howto-dev-btn">街並み: 箱のみ(軽い)</button>
+    <button id="setup-city2" type="button" class="howto-dev-btn">街並み: 写真つき(重い)</button>
+    <button id="setup-city0" type="button" class="howto-dev-btn" hidden>街並みを消す</button>
     <button id="setup-close" type="button" class="howto-close-btn">閉じる</button>
   </div>
 </div>
@@ -661,6 +667,10 @@
   <summary>出典</summary>
   <a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院 地理院タイル</a>(標高タイル・全国最新写真)/
   住所検索: <a href="https://msearch.gsi.go.jp/address-search/" target="_blank" rel="noopener">国土地理院 Address Search API</a>
+  <span id="credit-plateau" hidden>/
+    街並み: <a href="https://www.mlit.go.jp/plateau/" target="_blank" rel="noopener">3D都市モデル(Project PLATEAU)</a>/ 国土交通省(CC BY 4.0)</span>
+  <span id="credit-road" hidden>/
+    道路: <a href="https://github.com/gsi-cyberjapan/gsimaps-vector-experiment" target="_blank" rel="noopener">国土地理院 地理院地図Vector(仮称)提供実験</a></span>
 </details>
 
 <div id="loading" style="display:none">

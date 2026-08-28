@@ -4,6 +4,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { buildTerrain, lonLatToTile } from './terrain.js';
+import { loadBuildings, estimateGeoidOffset } from './plateau.js';
+import { loadRoads } from './road.js';
+import { createChaseCar } from './chasecar.js';
 
 // ---- 舞台設定 ----
 const TILE_RADIUS = 2; // 5x5タイル ≒ 20km四方
@@ -62,7 +65,7 @@ function decodeWind(s) {
 }
 const encodeWind = (rows) => rows.map((r) => `${r.ft},${r.dir},${r.kt}`).join(';');
 const shareUrl = () =>
-  `${location.origin}${location.pathname}?a=${AREA.lon.toFixed(4)},${AREA.lat.toFixed(4)}&w=${encodeWind(PIBAL)}${setupMode ? '&setup=1' : ''}${devMode ? '&dev=1' : ''}`;
+  `${location.origin}${location.pathname}?a=${AREA.lon.toFixed(4)},${AREA.lat.toFixed(4)}&w=${encodeWind(PIBAL)}${setupMode ? '&setup=1' : ''}${devMode ? '&dev=1' : ''}${mainParams.has('city') ? `&city=${mainParams.get('city')}` : ''}${devMode && mainParams.has('road') ? '&road=1' : ''}`;
 
 let PIBAL = decodeWind(new URLSearchParams(location.search).get('w'))
   || WIND_PRESETS[0].rows.map(toRowObj);
@@ -426,17 +429,39 @@ let expired = false;
 
 // 一人称視点(ゴンドラ視点)。目の位置は固定し、視線方向だけをドラッグで回す
 let fpvYaw = 0, fpvPitch = 0;
+// チェイスカー視点(devMode + ?road=1 のときだけ)。同じ車内から見方が2つある:
+//   'balloon' … 気球を見る(クルーの見方)。車が曲がっても気球を見続ける
+//   'forward' … 進行方向を見る(運転席の見方)。道路の繋がりや経路の選び方が分かる
+// どちらもドラッグ量はその基準からの相対角なので、ずらして見回せる
+let carView = false;
+let carAim = 'balloon';
+let carYaw = 0, carPitch = 0;
+const CAR_EYE_HEIGHT = 1.5;
 const EYE_HEIGHT = 1.85;
 const LOOK_SPEED = 0.0038;
 const PITCH_LIMIT = THREE.MathUtils.degToRad(85);
 const look = { dragging: false, lastX: 0, lastY: 0 };
 
+// 視点は 外部 → ゴンドラ →(クルー→運転席)→ 外部 の順に回す。
+// チェイスカーの2つは devMode + ?road=1 で車があるときだけ循環に入るので、
+// 既定モードの V は今までどおり「ゴンドラ/外部」の2択のまま
 function toggleFpv() {
   if (!started) return;
-  fpv = !fpv;
+  if (fpv) {
+    fpv = false;
+    if (chaseCar) { carView = true; carAim = 'balloon'; applyViewMode(); return; }
+  } else if (carView && carAim === 'balloon') {
+    carAim = 'forward';          // 同じ車内で、見る向きだけを進行方向に切り替える
+    applyViewMode();
+    return;
+  } else if (carView) {
+    carView = false;
+  } else {
+    fpv = true;
+  }
   applyViewMode();
-  if (!fpv) {
-    // ゴンドラ視点から戻るときは、見ていた方向の後方に回り込む
+  if (!fpv && !carView) {
+    // ゴンドラ/チェイスカー視点から戻るときは、見ていた方向の後方に回り込む
     const horiz = new THREE.Vector3(Math.sin(fpvYaw), 0, -Math.cos(fpvYaw));
     const tgt = new THREE.Vector3(state.pos.x, state.pos.y + 12, state.pos.z);
     camera.position.copy(tgt).addScaledVector(horiz, -90).add(new THREE.Vector3(0, 35, 0));
@@ -509,7 +534,7 @@ setupTouchControls();
 // ゴンドラ視点でのルック操作(ドラッグで視線方向を回転。目の位置は動かさない)
 // pointerイベントなのでマウスでもタッチでも同じコードで動く
 renderer.domElement.addEventListener('pointerdown', (e) => {
-  if (!fpv || !started) return;
+  if ((!fpv && !carView) || !started) return;
   renderer.domElement.setPointerCapture(e.pointerId);
   look.dragging = true;
   look.lastX = e.clientX;
@@ -520,6 +545,11 @@ renderer.domElement.addEventListener('pointermove', (e) => {
   const dx = e.clientX - look.lastX, dy = e.clientY - look.lastY;
   look.lastX = e.clientX;
   look.lastY = e.clientY;
+  if (carView) {
+    carYaw -= dx * LOOK_SPEED;
+    carPitch = THREE.MathUtils.clamp(carPitch - dy * LOOK_SPEED, -PITCH_LIMIT, PITCH_LIMIT);
+    return;
+  }
   fpvYaw -= dx * LOOK_SPEED;
   fpvPitch = THREE.MathUtils.clamp(fpvPitch - dy * LOOK_SPEED, -PITCH_LIMIT, PITCH_LIMIT);
 });
@@ -533,8 +563,24 @@ function applyViewMode() {
     fpvYaw = Math.atan2(dir.x, -dir.z);
     fpvPitch = Math.asin(THREE.MathUtils.clamp(dir.y, -1, 1));
     controls.enabled = false;
+  } else if (carView) {
+    // 入るとき・見る向きを変えるときは、その基準を正面に置く(相対角を0に戻す)
+    carYaw = 0;
+    carPitch = 0;
+    controls.enabled = false;
   } else {
     controls.enabled = true;
+  }
+  // 運転席にいる間は自分の車体を描かない(目の前が箱で塞がるため)
+  if (chaseCar) chaseCar.group.visible = !carView;
+
+  // 気球を見るときだけ画角を絞る。1〜2km先にあることも多く、既定の60°では点にしかならない
+  // (「目を凝らして見ている」ぶんだけで、双眼鏡ほどには寄せない)。
+  // 進行方向を見るときは、運転席らしい見え方のまま 60° にしておく
+  const wantFov = carView && carAim === 'balloon' ? 35 : 60;
+  if (camera.fov !== wantFov) {
+    camera.fov = wantFov;
+    camera.updateProjectionMatrix();
   }
 }
 
@@ -673,6 +719,26 @@ document.getElementById('setup-dev').addEventListener('click', () => {
   p.set('dev', '1');
   location.href = `${location.pathname}?${p.toString()}`;
 });
+
+// 「街並み」: PLATEAU(3D都市モデル)の建物を重ねて表示する(?city=1 / ?city=2)。
+// 表示のみで飛行の挙動は変えないため、いま見ているモード(既定/setup/dev)はそのまま引き継ぐ
+for (const [id, lod] of [['setup-city1', '1'], ['setup-city2', '2']]) {
+  document.getElementById(id).addEventListener('click', () => {
+    const p = new URLSearchParams(location.search);
+    p.set('city', lod);
+    location.href = `${location.pathname}?${p.toString()}`;
+  });
+}
+// 街並みを出しているときだけ、戻り道(消す)を見せる
+if (new URLSearchParams(location.search).has('city')) {
+  const off = document.getElementById('setup-city0');
+  off.hidden = false;
+  off.addEventListener('click', () => {
+    const p = new URLSearchParams(location.search);
+    p.delete('city');
+    location.href = p.toString() ? `${location.pathname}?${p.toString()}` : location.pathname;
+  });
+}
 
 // ---- エリア選択画面(日本全図のスリッピーマップ+プリセット) ----
 function selectArea() {
@@ -889,6 +955,16 @@ const hasChosenArea = mainParams.has('a'); // 住所検索や共有URLなどで�
 AREA = decodeArea(mainParams.get('a'));
 if (!AREA) AREA = (setupMode || devMode) ? await selectArea() : PRESET_AREAS[0];
 
+// 住所検索を出さないモード:
+//   ?setup=1(本格モード) … エリアはブリーフィングで決まっているのが競技の前提で、
+//     飛行中に別の場所へ飛べてしまうとその前提と噛み合わない
+//   ?dev=1&road=1(チェイスカー) … 地上クルーの追尾を通して見るための画面で、
+//     途中で別の場所へ飛ぶと道路グラフを読み直すことになる
+// 既定モード / ?a= / 素の ?dev=1 では今までどおり出す
+if (setupMode || (devMode && mainParams.has('road'))) {
+  document.getElementById('area-search').style.display = 'none';
+}
+
 const loadingEl = document.getElementById('loading');
 document.getElementById('load-title').textContent =
   `${AREA.name || `${AREA.lat.toFixed(3)}N ${AREA.lon.toFixed(3)}E`} の地形を読み込み中…`;
@@ -905,6 +981,155 @@ loadingEl.remove();
 if (setupMode) setupWindEditor();
 // devMode用は完全に別関数・別要素(#dev-briefing 以下)を使う。安定版のコードには触れない
 if (devMode) setupDevWindEditor();
+
+// ---- 開発途中版(?city=1)専用: PLATEAU の街並み表示 ----
+// ?city=1 で LOD1(高さだけの箱)、?city=2 で LOD2(写真テクスチャ付き)。
+// **表示のみ**。当たり判定にも風にも高度計算にも一切関与しないので、飛行挙動は既定と同じ。
+// 地形の読み込みが終わってから非同期で始めるため、離陸を待たせることもない。
+if (mainParams.has('city')) loadCityBuildings();
+
+async function loadCityBuildings() {
+  const lod = mainParams.get('city') === '2' ? 2 : 1;
+  // LOD2 はタイルが小さく枚数が多い(1枚 0.1〜1.1MB)。LOD1 は1枚が重い(同 約13MB)
+  const maxTiles = lod === 2 ? 40 : 4;
+
+  const status = document.createElement('div');
+  status.className = 'panel';
+  status.style.cssText =
+    'position:fixed; left:12px; bottom:12px; z-index:50; font-size:11px;'
+    + ' max-width:min(60vw,320px); transition:opacity 1.2s;';
+  status.textContent = '街並み(PLATEAU)を読み込み中…';
+  document.body.appendChild(status);
+  const fadeOut = () => { setTimeout(() => { status.style.opacity = '0'; }, 8000); };
+
+  try {
+    const { group, stats } = await loadBuildings({
+      centerLon: AREA.lon, centerLat: AREA.lat, // 地形と同じ基準点を渡すこと
+      radiusM: 3000, maxTiles, lod,
+      onProgress: (done, total, msg) => { status.textContent = `街並み: ${msg}(${done}/${total})`; },
+    });
+
+    if (!stats.covered) {
+      status.textContent = 'このエリアは PLATEAU 未整備のため、街並みは表示されません'
+        + '(整備済みの例: 渡良瀬遊水地・佐久・千曲川)';
+      fadeOut();
+      return;
+    }
+
+    // PLATEAU は楕円体高、地形は標高。差を引いて地面に合わせる
+    const est = estimateGeoidOffset(group, terrain.getHeight);
+    if (est) group.position.y = -est.offset;
+    scene.add(group);
+    document.getElementById('credit-plateau').hidden = false;
+
+    status.innerHTML = `街並み LOD${lod}: ${stats.buildings.toLocaleString()}棟 / `
+      + `${(stats.fetchedBytes / 1048576).toFixed(1)}MB / `
+      + (est ? `高さ補正 ${est.offset.toFixed(1)}m` : '高さ補正できず(要確認)');
+    fadeOut();
+  } catch (err) {
+    // 街並みは飾りなので、失敗しても飛行は続けられる
+    console.warn('PLATEAU の読み込みに失敗:', err);
+    status.textContent = '街並みを読み込めませんでした(飛行には影響しません)';
+    fadeOut();
+  }
+}
+
+// ---- 開発途中版(?dev=1&road=1)専用: チェイスカーの道路表示(第1段階) ----
+// 地理院ベクトルタイル(experimental_bvmap)の道路中心線を z14 で読み、地形に貼って描く。
+// **この段階では表示のみ。車はまだ走らせない。**当たり判定・風・高度計算には一切関与しないので、
+// 飛行挙動は既定と同じ。街並み(?city=)と同様、地形の読み込み後に非同期で始める。
+let chaseCar = null;      // 第2段階。読み込みが終わるまで null(飛行はその間も普通に続く)
+let roadStream = null;    // 走行中に道路タイルを足す関数(loadRoads の ensureAround)
+let lastRoadStream = 0;   // 前回タイルを足した時刻(ミリ秒)
+let roadStatusEl = null;  // 道路・チェイスカーの状態表示(devMode + ?road=1 のときだけ)
+let roadSummary = '';     // 読み込み結果の要約(状態表示の1行目に出し続ける)
+let lastCarReadout = 0;
+if (devMode && mainParams.has('road')) loadRoadNetwork();
+
+async function loadRoadNetwork() {
+  const status = document.createElement('div');
+  status.className = 'panel';
+  status.style.cssText =
+    'position:fixed; left:12px; bottom:12px; z-index:50; font-size:11px;'
+    + ' max-width:min(60vw,320px); transition:opacity 1.2s;';
+  status.textContent = '道路(地理院ベクトルタイル)を読み込み中…';
+  document.body.appendChild(status);
+  roadStatusEl = status;   // 以降はフレームごとにチェイスカーの状態を書き足す
+
+  try {
+    const { group, graph, stats, ensureAround } = await loadRoads({
+      centerLon: AREA.lon, centerLat: AREA.lat, // 地形と同じ基準点を渡すこと
+      getHeight: terrain.getHeight,
+      // 最初は離陸地点まわりだけ。気球が流れるぶんは飛行中に足していく
+      radiusM: 3000, streamRadiusM: 2500, maxTilesTotal: 48,
+      onProgress: (done, total, msg) => { status.textContent = `道路: ${msg}(${done}/${total})`; },
+    });
+    roadStream = ensureAround;
+
+    if (stats.edges === 0) {
+      status.textContent = 'この範囲には道路データがありませんでした(飛行には影響しません)';
+      return;
+    }
+
+    scene.add(group);
+    document.getElementById('credit-road').hidden = false;
+    window.roadGraph = graph;
+
+    // 第2段階: チェイスカーを道路の上に置いて走らせる。
+    // 走らせるだけで、風・高度計算・当たり判定には一切関与しない。
+    // ここで失敗しても道路の表示は残したいので、例外は個別に拾う
+    try {
+      chaseCar = createChaseCar({
+        graph, getHeight: terrain.getHeight,
+        startX: state.pos.x, startZ: state.pos.z, // 離陸地点のいちばん近くの道から出発する
+      });
+      if (chaseCar) {
+        scene.add(chaseCar.group);
+        // V の循環にチェイスカー視点が加わったことを操作説明にも出す
+        const hint = document.getElementById('help-view');
+        if (hint) hint.textContent = '(ゴンドラ/外部/車内:気球/車内:進行方向)';
+      }
+    } catch (err) {
+      console.warn('チェイスカーを置けませんでした:', err);
+      chaseCar = null;
+      roadSummary = `チェイスカーの生成に失敗: ${err && err.message ? err.message : err}`;
+    }
+
+    // 第1段階の確認に必要な数字。とくに「最大連結成分」が高ければ、
+    // タイル境界の継ぎ目がグローバル整数座標の一致だけで縫えていることになる
+    if (!roadSummary) {
+      roadSummary = `道路 z14: ${stats.tilesLoaded}枚 / ${(stats.bytes / 1024).toFixed(0)}KB / `
+        + `中心線 ${stats.centerlines.toLocaleString()}本 / ${(stats.lengthM / 1000).toFixed(1)}km / `
+        + `交差点 ${stats.nodes.toLocaleString()}点 / `
+        + `最大連結成分 ${(stats.largestComponentRatio * 100).toFixed(1)}%`
+        + (chaseCar ? ` / 走行可能 ${chaseCar.drivableEdges.toLocaleString()}区間`
+                    : ' / <b>走れる道が見つかりませんでした</b>');
+    }
+  } catch (err) {
+    // 道路も現時点では表示のみなので、失敗しても飛行は続けられる
+    console.warn('道路の読み込みに失敗:', err);
+    roadSummary = `道路を読み込めませんでした: ${err && err.message ? err.message : err}`;
+  }
+}
+
+// チェイスカーの状態表示(devMode + ?road=1 専用)。
+// 「車がいない」ときに、居ないのか・見えていないだけなのかを切り分けるために出す
+function updateRoadReadout() {
+  if (!roadStatusEl) return;
+  let line = roadSummary || '道路を読み込み中…';
+  if (chaseCar) {
+    const c = chaseCar.info();
+    const d = Math.hypot(state.pos.x - c.x, state.pos.z - c.z);
+    // 気球から見た地上クルーの方位(コンパスの水色の印と同じ向き)
+    const brg = (Math.atan2(c.x - state.pos.x, -(c.z - state.pos.z)) * 180 / Math.PI + 360) % 360;
+    line += `<br>チェイスカー: ${d < 1000 ? `${d.toFixed(0)}m` : `${(d / 1000).toFixed(2)}km`} / `
+      + `${String(Math.round(brg)).padStart(3, '0')}°(コンパスの水色)/ `
+      + `${c.speedKmh}km/h(目安)/ 幅員区分${c.rnkWidth} / `
+      + (c.stuck ? '停止' : c.waiting ? '待機' : `走行中(残り${c.routeLeft}区間)`)
+      + (carView ? ` / <b>車内から表示中(${carAim === 'balloon' ? '気球を見る' : '進行方向'})</b>` : '');
+  }
+  roadStatusEl.innerHTML = line;
+}
 
 function setupWindEditor() {
   const sel = document.getElementById('wind-preset');
@@ -2678,6 +2903,17 @@ function drawCompass() {
   ctx.beginPath();
   ctx.arc(Math.sin(brgT) * (R - 5), -Math.cos(brgT) * (R - 5), 5, 0, Math.PI * 2);
   ctx.fill();
+
+  // チェイスカーの方向(水色の印)。devMode + ?road=1 のときだけ。
+  // 2km も離れると車は画面上で点にもならないので、実機と同じく「見えなくても方位は分かる」
+  if (chaseCar) {
+    const c = chaseCar.info();
+    const brgC = Math.atan2(c.x - state.pos.x, -(c.z - state.pos.z));
+    ctx.fillStyle = '#5ad0ff';
+    ctx.beginPath();
+    ctx.rect(Math.sin(brgC) * (R - 5) - 4, -Math.cos(brgC) * (R - 5) - 4, 8, 8);
+    ctx.fill();
+  }
   ctx.restore();
 
   // 視線方向の固定ポインタ(上向き三角)と数値
@@ -2762,6 +2998,21 @@ renderer.setAnimationLoop(() => {
     stepClock(dt);
     updateSounds(w.kt);
 
+    // チェイスカー(devMode + ?road=1 のときだけ存在する)。気球を道なりに追う。
+    // 表示上の存在で、風にも高度計算にも当たり判定にも関与しない
+    if (chaseCar) chaseCar.update(dt, state.pos.x, state.pos.z);
+
+    // 気球が流れた先の道路タイルを足していく。3秒に1回だけ、しかも非同期なので
+    // フレームを止めない(ensureAround は多重呼び出しを自分で弾く)
+    if (roadStream && performance.now() - lastRoadStream > 3000) {
+      lastRoadStream = performance.now();
+      roadStream(state.pos.x, state.pos.z);
+    }
+    if (roadStatusEl && performance.now() - lastCarReadout > 500) {
+      lastCarReadout = performance.now();
+      updateRoadReadout();
+    }
+
     balloon.group.position.copy(state.pos);
     balloon.flame.visible = input.burner && state.fuel > 0;
     balloon.flameLight.intensity = balloon.flame.visible ? 40 : 0;
@@ -2781,6 +3032,32 @@ renderer.setAnimationLoop(() => {
       camera.position.set(state.pos.x - 0.45, state.pos.y + EYE_HEIGHT, state.pos.z);
       const cy = Math.cos(fpvPitch), sy = Math.sin(fpvPitch);
       const dir = new THREE.Vector3(Math.sin(fpvYaw) * cy, sy, -Math.cos(fpvYaw) * cy);
+      camera.lookAt(camera.position.x + dir.x, camera.position.y + dir.y, camera.position.z + dir.z);
+    } else if (carView && chaseCar) {
+      // チェイスカーの車内から。**既定では気球を見る**(地上クルーは気球を目で追っている)。
+      // ドラッグ量はそこからの相対角なので、ずらせば進行方向の道路も見られる
+      const c = chaseCar.info();
+      const headRad = (c.headingDeg * Math.PI) / 180;
+      // 車体の中心より少し前に目を置く(ボンネット越しの視界にならないように)
+      camera.position.set(
+        c.x + Math.sin(headRad) * 0.8,
+        terrain.getHeight(c.x, c.z) + CAR_EYE_HEIGHT,
+        c.z - Math.cos(headRad) * 0.8,
+      );
+      // 見る基準。'balloon' なら気球の方向(車が曲がっても気球を見続ける)、
+      // 'forward' なら車の進行方向(道路の繋がりや経路の選び方が見える)
+      let baseYaw = headRad, basePitch = 0;
+      if (carAim === 'balloon') {
+        const dx = state.pos.x - camera.position.x;
+        const dz = state.pos.z - camera.position.z;
+        const dy = state.pos.y - camera.position.y;
+        baseYaw = Math.atan2(dx, -dz);
+        basePitch = Math.atan2(dy, Math.hypot(dx, dz));
+      }
+      const yaw = baseYaw + carYaw;
+      const pitch = THREE.MathUtils.clamp(basePitch + carPitch, -PITCH_LIMIT, PITCH_LIMIT);
+      const cy = Math.cos(pitch), sy = Math.sin(pitch);
+      const dir = new THREE.Vector3(Math.sin(yaw) * cy, sy, -Math.cos(yaw) * cy);
       camera.lookAt(camera.position.x + dir.x, camera.position.y + dir.y, camera.position.z + dir.z);
     } else {
       // カメラは気球に追従(ターゲット+同じ分だけ平行移動)
@@ -2804,6 +3081,6 @@ renderer.setAnimationLoop(() => {
     }
   }
 
-  if (!fpv) controls.update();
+  if (!fpv && !carView) controls.update();
   renderer.render(scene, camera);
 });
