@@ -1,7 +1,7 @@
 // PLATEAU(3D都市モデル)の建築物LOD1を読み込み、
 // prototype/terrain.js と同じローカル座標系(x:東+, y:標高, z:南+, 単位m)に載せる。
 //
-// 実データで確認した前提(2026-08-18):
+// 実データで確認した前提(2026-08-27):
 //   - 配信は https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/<spec>/tileset.json
 //     認証不要・CORS `*`・Range リクエスト可
 //   - b3dm はサイズの約76%が使わない属性JSON(batchTable)。glTF はファイル末尾にあるので
@@ -107,20 +107,32 @@ function regionInfo(region) {
   };
 }
 
+// 矩形(度)と region が重なるか。region が無いノードは判定できないので通す
+function regionIntersects(region, bbox) {
+  if (!region || !bbox) return true;
+  const r = regionInfo(region);
+  return !(r.east < bbox.west || r.west > bbox.east
+        || r.north < bbox.south || r.south > bbox.north);
+}
+
 // tileset を再帰的にたどり、実データ(b3dm)を持つ末端タイルの一覧を返す。
 // 外部 tileset (.json を content に持つノード) は展開する。
-async function collectLeafTiles(tilesetUrl, depth = 0, out = []) {
+//
+// bbox で範囲外の枝を切ることが重要。全国版 (all-bldg-...) は市区町村ごとの
+// 外部 tileset を441件ぶら下げているので、絞らないと441回 fetch することになる。
+async function collectLeafTiles(tilesetUrl, bbox, depth = 0, out = []) {
   if (depth > 6) return out;
   const res = await fetch(tilesetUrl);
   if (!res.ok) throw new Error(`tileset 取得失敗 ${res.status}: ${tilesetUrl}`);
   const tileset = await res.json();
 
   const walk = async (node) => {
+    if (!regionIntersects(node.boundingVolume?.region, bbox)) return;
     const uri = node.content?.uri ?? node.content?.url;
     const children = node.children ?? [];
     if (uri && /\.json(\?|$)/.test(uri)) {
       // 外部 tileset。そちらを開いて続きを拾う
-      await collectLeafTiles(resolveUri(tilesetUrl, uri), depth + 1, out);
+      await collectLeafTiles(resolveUri(tilesetUrl, uri), bbox, depth + 1, out);
       return;
     }
     if (children.length === 0) {
@@ -181,7 +193,9 @@ async function fetchGlb(url, stats) {
  * PLATEAU の建築物 LOD1 を読み込む。
  *
  * @param {object} opts
- * @param {string} opts.cityCode   5桁市区町村コード(例 '13101' = 千代田区)
+ * @param {string} [opts.cityCode] 5桁市区町村コード(例 '13101' = 千代田区)。
+ *   省略すると全国版(`all`)を使い、基準点の座標から自動でその市区町村のタイルを引き当てる。
+ *   本体は住所検索で日本中どこでも飛べるので、通常は省略する
  * @param {number} opts.centerLon  基準点の経度(terrain と同じ値を渡すこと)
  * @param {number} opts.centerLat  基準点の緯度
  * @param {number} opts.radiusM    この距離内のタイルを読む(m)
@@ -203,29 +217,45 @@ export async function loadBuildings({
   const t0 = performance.now();
   const report = (done, total, msg) => onProgress && onProgress(done, total, msg);
 
-  // 配信の spec は <市区町村コード>-bldg-lod<N>[-texture|-notexture]-latest。
+  // 配信の spec は <範囲>-bldg-lod<N>[-texture|-notexture]-latest。
+  // <範囲> は 'all'(全国) / 2桁都道府県コード / 5桁市区町村コード。
   // LOD1 はテクスチャ指定を受け付けない(そもそも持っていない)
+  const area = cityCode || 'all';
   const spec = lod >= 2
-    ? `${cityCode}-bldg-lod${lod}-${texture ? 'texture' : 'notexture'}-latest`
-    : `${cityCode}-bldg-lod${lod}-latest`;
+    ? `${area}-bldg-lod${lod}-${texture ? 'texture' : 'notexture'}-latest`
+    : `${area}-bldg-lod${lod}-latest`;
+  stats.spec = spec;
+
+  const mPerDegLat = 111132;
+  const mPerDegLon = 111320 * Math.cos((centerLat * Math.PI) / 180);
+  // 走査を絞る矩形。全国版でも、ここで範囲外の市区町村を切るので fetch は数回で済む
+  const bbox = {
+    west:  centerLon - radiusM / mPerDegLon,
+    east:  centerLon + radiusM / mPerDegLon,
+    south: centerLat - radiusM / mPerDegLat,
+    north: centerLat + radiusM / mPerDegLat,
+  };
 
   report(0, 1, 'tileset.json を取得中');
-  const all = await collectLeafTiles(`${CATALOG}/${spec}/tileset.json`);
+  const all = await collectLeafTiles(`${CATALOG}/${spec}/tileset.json`, bbox);
   stats.tilesInTileset = all.length;
 
   // 基準点からの距離でタイルを絞る(緯度の縮尺を考慮した簡易距離)
-  const mPerDegLat = 111132;
-  const mPerDegLon = 111320 * Math.cos((centerLat * Math.PI) / 180);
   const withDist = all.map((t) => ({
     ...t,
     dist: Math.hypot((t.region.lon - centerLon) * mPerDegLon, (t.region.lat - centerLat) * mPerDegLat),
   })).sort((a, b) => a.dist - b.dist);
 
   const targets = withDist.filter((t) => t.dist <= radiusM).slice(0, maxTiles);
-  if (targets.length === 0) {
-    throw new Error(
-      `基準点から ${radiusM}m 以内に建物タイルがありません` +
-      `(最寄り ${Math.round(withDist[0]?.dist ?? -1)}m)。市区町村コードか基準点を見直してください`);
+
+  // PLATEAU は全国が整備されているわけではない。範囲外は「建物が無い」だけで、
+  // 飛行そのものは成立する。エラーにせず空の group を返す
+  stats.covered = targets.length > 0;
+  stats.nearestM = withDist.length > 0 ? Math.round(withDist[0].dist) : null;
+  if (!stats.covered) {
+    report(1, 1, 'この範囲に PLATEAU の整備データがありません');
+    stats.ms = Math.round(performance.now() - t0);
+    return { group: new THREE.Group(), stats };
   }
 
   const toLocal = makeEcefToLocalMatrix(centerLon, centerLat);

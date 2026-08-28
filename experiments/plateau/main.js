@@ -8,7 +8,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { buildTerrain } from '../../prototype/terrain.js';
-import { loadBuildings, estimateGeoidOffset } from './plateau.js';
+// 本体と同じものを使う(第1段階で prototype/ へ移した)
+import { loadBuildings, estimateGeoidOffset } from '../../prototype/plateau.js';
 
 // 検証地点。既定は千代田区(大手町付近)
 const PRESETS = {
@@ -87,6 +88,10 @@ async function boot() {
   } catch (err) {
     setLog(`建物の読み込みに失敗: ${err.message}`);
     console.error(err);
+    return;
+  }
+  if (!result.stats.covered) {
+    setLog('この範囲に PLATEAU の整備データがありません。地点を変えてください');
     return;
   }
 
