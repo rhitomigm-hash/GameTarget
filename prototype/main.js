@@ -435,7 +435,11 @@ let fpvYaw = 0, fpvPitch = 0;
 // どちらもドラッグ量はその基準からの相対角なので、ずらして見回せる
 let carView = false;
 let carAim = 'balloon';
+// どの車の中から見ているか(0:1号車 / 1:2号車)。2号車は「気球を見る」だけを足す
+// (到着後は動かないので「進行方向」に価値がほとんど無い)
+let carIndex = 0;
 let carYaw = 0, carPitch = 0;
+const viewCar = () => (carIndex === 0 ? chaseCar : chaseCar2);
 // 目の高さは**車の床から**測る(車は道路の描画面 1.5m の上に乗っているので、
 // 地面から測ると座席がその分だけ低くなる)
 const CAR_EYE_ABOVE_FLOOR = 0.9;
@@ -451,20 +455,27 @@ const LOOK_SPEED = 0.0038;
 const PITCH_LIMIT = THREE.MathUtils.degToRad(85);
 const look = { dragging: false, lastX: 0, lastY: 0 };
 
-// 視点は 外部 → ゴンドラ →(クルー→運転席)→ 外部 の順に回す。
-// チェイスカーの2つは devMode + ?road=1 で車があるときだけ循環に入るので、
-// 既定モードの V は今までどおり「ゴンドラ/外部」の2択のまま
+// 視点は 外部 → ゴンドラ → 1号車内(気球)→ 1号車内(進行方向)→ 2号車(気球)→ 外部
+// の順に回す。チェイスカーの3つは devMode + ?road=1 で車があるときだけ循環に入るので、
+// 既定モードの V は今までどおり「ゴンドラ/外部」の2択のまま。
+// **5つが上限**と考えている(これ以上増やすなら別操作に分ける)
 function toggleFpv() {
   if (!started) return;
   if (fpv) {
     fpv = false;
-    if (chaseCar) { carView = true; carAim = 'balloon'; applyViewMode(); return; }
-  } else if (carView && carAim === 'balloon') {
+    if (chaseCar) { carView = true; carIndex = 0; carAim = 'balloon'; applyViewMode(); return; }
+  } else if (carView && carIndex === 0 && carAim === 'balloon') {
     carAim = 'forward';          // 同じ車内で、見る向きだけを進行方向に切り替える
+    applyViewMode();
+    return;
+  } else if (carView && carIndex === 0 && chaseCar2) {
+    carIndex = 1;                // 2号車へ。こちらは「気球を見る」だけ
+    carAim = 'balloon';
     applyViewMode();
     return;
   } else if (carView) {
     carView = false;
+    carIndex = 0;
   } else {
     fpv = true;
   }
@@ -481,7 +492,7 @@ function toggleFpv() {
 
 // Shift+V: 外部視点で回る対象を 気球 → 1号車(→ 2号車…)→ 気球 と巡回する。
 // 車が増えてもこの配列に足すだけで済む
-const orbitCars = () => (chaseCar ? [chaseCar] : []);
+const orbitCars = () => [chaseCar, chaseCar2].filter(Boolean);
 function cycleOrbitTarget() {
   const cars = orbitCars();
   if (cars.length === 0) return;                 // 車がいなければ何も起きない
@@ -528,6 +539,11 @@ addEventListener('keydown', (e) => {
   if (e.code === 'KeyR') input.rip = true;
   // Shift+V は隠しコマンド(devMode + ?road=1 で車がいるときだけ効く)
   if (e.code === 'KeyV') { if (e.shiftKey) cycleOrbitTarget(); else toggleFpv(); }
+  // C は Crew / Chase。無線は**問い合わせ形式**で、開いている間だけ報告が出る
+  // (割り込む警告は出さない)。devMode + ?road=1 で車がいるときだけ効く。
+  // Shift+C は隠しコマンド: 開発用の状態表示(距離・速度・幅員区分・残り区間)。
+  // V / Shift+V と同じ層の分け方 — C は無線、Shift+C は「その裏の数字」
+  if (e.code === 'KeyC') { if (e.shiftKey) toggleRoadStatus(); else toggleRadio(); }
   if (e.code === 'KeyM' && flightReady) dropMarker();
   if (e.code === 'KeyP') togglePibal();
   if (e.code === 'KeyW' && devMode) toggleWindCalcDebug(); // 隠しコマンド: 気圧配置モデルの計算過程表示(devMode専用)
@@ -552,7 +568,14 @@ if (isTouchDevice) {
   document.getElementById('instruments').open = true;
   document.getElementById('area-search').open = true;
   document.getElementById('credit').open = true;
+  // キー説明は**既定モードでは開いたまま**にする(初めての人が最初に読むもの)。
+  // devMode では左下にチェイスカーの状態表示も出て混み合うので、たたんで始める。
+  // **devMode 定数はこの時点ではまだ初期化されていない**(const の TDZ)ので、
+  // ここでは URL を直接読む。参照すると画面が真っ暗になる
+  document.getElementById('help-keys').open = !new URLSearchParams(location.search).has('dev');
 }
+// キー説明をたたむと #help の高さが変わる。その上に載せているチェイスカーの状態表示・無線を置き直す
+document.getElementById('help-keys').addEventListener('toggle', stackBottomLeft);
 function setupTouchControls() {
   function holdButton(btn, onDown, onUp) {
     const down = (e) => { e.preventDefault(); btn.classList.add('active'); onDown(); };
@@ -615,11 +638,12 @@ function applyViewMode() {
   } else {
     controls.enabled = true;
   }
-  // 運転席にいる間は自分の車体を描かない(目の前が箱で塞がるため)
-  if (chaseCar) {
-    chaseCar.group.visible = !carView;
+  // 車内にいる間は**その車の**車体を描かない(目の前が箱で塞がるため)。
+  // もう1台は外にいるので描いたままにする
+  for (const c of orbitCars()) {
+    c.group.visible = !(carView && c === viewCar());
     // 上空から車を探すための60mの柱は、車のそばで回すと画面を貫く。外から見る間は消す
-    chaseCar.setMarkVisible(!orbitCar);
+    c.setMarkVisible(!orbitCar);
   }
 
   // 車を回るときは寄れるようにする。既定の 25m は実物大(4.4m)の車には遠すぎる。
@@ -796,6 +820,30 @@ if (new URLSearchParams(location.search).has('city')) {
   off.addEventListener('click', () => {
     const p = new URLSearchParams(location.search);
     p.delete('city');
+    location.href = p.toString() ? `${location.pathname}?${p.toString()}` : location.pathname;
+  });
+}
+
+// 「チェイスカー」: 道路(地理院ベクトルタイル)の上を走る地上クルーの車を出す(?dev=1&road=1)。
+// **road は dev とのANDでしか効かない**ので、このボタンは dev=1 も一緒に付ける。
+// 街並みと違って「いま見ているモードをそのまま引き継ぐ」ことはできない
+document.getElementById('setup-road1').addEventListener('click', () => {
+  const p = new URLSearchParams(location.search);
+  p.set('dev', '1');
+  p.set('road', '1');
+  location.href = `${location.pathname}?${p.toString()}`;
+});
+// チェイスカーを出しているときだけ、戻り道(消す)を見せる。
+// **dev と road が揃っているときだけ**にする(road だけでは車は出ないので、
+// 「消す」を見せると出ていないものを消す形になって分からなくなる)。
+// **dev はそのまま残す**(開発途中版から来ているので、既定モードへ戻すのは行きすぎ)
+if (new URLSearchParams(location.search).has('road')
+  && new URLSearchParams(location.search).has('dev')) {
+  const off = document.getElementById('setup-road0');
+  off.hidden = false;
+  off.addEventListener('click', () => {
+    const p = new URLSearchParams(location.search);
+    p.delete('road');
     location.href = p.toString() ? `${location.pathname}?${p.toString()}` : location.pathname;
   });
 }
@@ -1046,6 +1094,14 @@ if (devMode) setupDevWindEditor();
 // ?city=1 で LOD1(高さだけの箱)、?city=2 で LOD2(写真テクスチャ付き)。
 // **表示のみ**。当たり判定にも風にも高度計算にも一切関与しないので、飛行挙動は既定と同じ。
 // 地形の読み込みが終わってから非同期で始めるため、離陸を待たせることもない。
+//
+// 左下に積む状態表示の入れ物は、**街並みの読み込みを始める前に宣言しておくこと。**
+// `loadCityBuildings()` は最初の await までを同期で走るので、その中の
+// `stackBottomLeft()` が `roadStatusEl` を読む。後ろで let 宣言していると
+// TDZ の ReferenceError でモジュールごと死ぬ(= 画面が真っ暗)
+let cityStatusEl = null;   // 街並みの読み込み状態(8秒後に DOM から取り除く)
+let roadStatusEl = null;   // 道路・チェイスカーの状態表示(隠しコマンド Shift+C)
+let radioEl = null;        // 無線パネル(C)。第3段階の報告
 if (mainParams.has('city')) loadCityBuildings();
 
 async function loadCityBuildings() {
@@ -1055,18 +1111,37 @@ async function loadCityBuildings() {
 
   const status = document.createElement('div');
   status.className = 'panel';
+  // **bottom は指定しない。**左下は #help(操作説明)の定位置なので、
+  // ここに bottom:12px で置くと「本格モード」「使い方」のリンクに重なる。
+  // 高さは stackBottomLeft() が #help の上へ積んで決める。
+  // **z-index も付けない。**付けるとオーバーレイ(z-index:10)より上に描かれてしまう
   status.style.cssText =
-    'position:fixed; left:12px; bottom:12px; z-index:50; font-size:11px;'
+    'position:fixed; left:12px; font-size:11px;'
     + ' max-width:min(60vw,320px); transition:opacity 1.2s;';
   status.textContent = '街並み(PLATEAU)を読み込み中…';
   document.body.appendChild(status);
-  const fadeOut = () => { setTimeout(() => { status.style.opacity = '0'; }, 8000); };
+  cityStatusEl = status;
+  stackBottomLeft();
+
+  // **消えるときは DOM から取り除く。**opacity:0 にするだけだと、見えないまま
+  // 左下に居座って**リンクのクリックを奪う**(2026-08-28に画面で発覚)。
+  // 透明で気づけず、リンク側を疑って2度直しにいった
+  const fadeOut = () => {
+    setTimeout(() => {
+      status.style.pointerEvents = 'none';   // 消えていく1.2秒の間も奪わない
+      status.style.opacity = '0';
+      setTimeout(() => { status.remove(); cityStatusEl = null; stackBottomLeft(); }, 1400);
+    }, 8000);
+  };
 
   try {
     const { group, stats } = await loadBuildings({
       centerLon: AREA.lon, centerLat: AREA.lat, // 地形と同じ基準点を渡すこと
       radiusM: 3000, maxTiles, lod,
-      onProgress: (done, total, msg) => { status.textContent = `街並み: ${msg}(${done}/${total})`; },
+      onProgress: (done, total, msg) => {
+        status.textContent = `街並み: ${msg}(${done}/${total})`;
+        stackBottomLeft();   // 文が伸びて高さが変わるので積み直す
+      },
     });
 
     if (!stats.covered) {
@@ -1099,31 +1174,72 @@ async function loadCityBuildings() {
 // **この段階では表示のみ。車はまだ走らせない。**当たり判定・風・高度計算には一切関与しないので、
 // 飛行挙動は既定と同じ。街並み(?city=)と同様、地形の読み込み後に非同期で始める。
 let chaseCar = null;      // 第2段階。読み込みが終わるまで null(飛行はその間も普通に続く)
+// 2号車。気球を追わず、ターゲットへ向かって手前で待機し、ターゲット付近の地上風を報告する。
+// 「予想着陸点へ先回り」は**採らなかった**(着陸点の予想には根拠が要る。ターゲットは既知の固定座標)
+let chaseCar2 = null;
+// 道路の読み込みが終わったら { graph, bounds } が入る。**車はここから離陸後に作る**
+// (離陸前の state.pos はターゲットなので、そこで作ると車がターゲットの真横に湧く)
+let roadReady = null;
 let roadStream = null;    // 走行中に道路タイルを足す関数(loadRoads の ensureAround)
+let roadPending = null;   // その場所の周囲に未読タイルが残っているか(loadRoads の pendingAround)
+let roadStreamTurn = 0;   // タイルを足す先を 気球 / 2号車 で交互にするための番号
 let lastRoadStream = 0;   // 前回タイルを足した時刻(ミリ秒)
-let roadStatusEl = null;  // 道路・チェイスカーの状態表示(devMode + ?road=1 のときだけ)
+// roadStatusEl は街並みの節で先に宣言している(TDZ を避けるため。上のコメントを参照)
 let roadSummary = '';     // 読み込み結果の要約(状態表示の1行目に出し続ける)
 let roadStats = null;     // loadRoads が返す統計(tilesLoaded / capped は走行中も更新される)
 let roadTextEl = null;    // 状態の文(0.5秒ごとに作り直す)
+let roadBriefEl = null;   // たたんだときも出し続ける要点(summary の中身)
+let roadBriefOverride = ''; // 読み込みに失敗した等、車の状態より優先して出したい文
 let roadOrbitBtn = null;  // Shift+V と同じ切り替えのボタン(作り直さない)
+let roadRadioBtn = null;  // 無線を開く/閉じるボタン(C と同じ。作り直さない)
+// radioEl は街並みの節で先に宣言している(TDZ を避けるため)
+let radioOpen = false;
+let roadStatusShown = false;   // 隠しコマンド Shift+C で出しているか
 
-// 道路の状態表示を、左下の操作説明(#help)の上に逃がす
-function positionRoadStatus() {
-  if (!roadStatusEl) return;
+/**
+ * 左下に出すパネルを、**操作説明(#help)の上に順に積む**。
+ *
+ * 左下は #help(操作説明と「本格モード」「使い方」の入口)の定位置なので、
+ * ここに `bottom:12px` で何かを置くと**リンクの上に重なってクリックを奪う**。
+ * 街並み(PLATEAU)の状態表示が実際にそうなっていた(2026-08-28に画面で発覚)。
+ * 高さも出し入れも変わるので、文を書き換えたとき・開閉したときに呼び直すこと。
+ */
+function stackBottomLeft() {
   const help = document.getElementById('help');
-  roadStatusEl.style.bottom = `${12 + (help ? help.offsetHeight : 0) + 8}px`;
+  let bottom = 12 + (help ? help.offsetHeight : 0) + 8;
+  for (const el of [roadStatusEl, radioEl, cityStatusEl]) {
+    if (!el || !el.isConnected || el.style.display === 'none') continue;
+    el.style.bottom = `${bottom}px`;
+    bottom += el.offsetHeight + 8;
+  }
 }
 let lastCarReadout = 0;
 if (devMode && mainParams.has('road')) loadRoadNetwork();
 
 async function loadRoadNetwork() {
-  const status = document.createElement('div');
+  // 2台ぶんで4〜5行になり画面を塞ぐので、**たためるようにする**(#instruments・#credit と同じ作法)。
+  // ただし**たたんでも要点は summary に出し続ける**。この表示は
+  // 「車がいないのか、見えていないだけなのか」を切り分けるために出しているもので、
+  // 全部隠すと第2段階でかかった何往復かが戻ってくる
+  const status = document.createElement('details');
+  status.id = 'road-status';
   status.className = 'panel';
-  status.style.cssText =
-    'position:fixed; left:12px; bottom:12px; z-index:50; font-size:11px;'
-    + ' max-width:min(60vw,320px); transition:opacity 1.2s;';
+  // **既定では出さない(隠しコマンド Shift+C)。**
+  // 第2段階で出し続けることにした理由は「車がいないのか、見えていないだけなのか」を
+  // 切り分けるためだったが、**離陸地点に車が確実に出るようになってその必要が消えた**
+  // (2026-08-28、`spawnChaseCars` を離陸後に呼ぶよう直した)。開発用の数字なので、
+  // 見たいときだけ出せばよい
+  status.style.display = 'none';
   document.body.appendChild(status);
   roadStatusEl = status;   // 以降はフレームごとにチェイスカーの状態を書き足す
+
+  const summary = document.createElement('summary');
+  roadBriefEl = document.createElement('span');
+  roadBriefEl.textContent = '道路を読み込み中…';
+  summary.appendChild(roadBriefEl);
+  status.appendChild(summary);
+  // たたむと高さが変わるので、上に載せている無線パネルを置き直す
+  status.addEventListener('toggle', stackBottomLeft);
 
   // 状態の文とボタンを分けておく。文は 0.5秒ごとに作り直すので、同じ入れ物に
   // ボタンを混ぜると、押している途中で差し替わってクリックが取りこぼされる。
@@ -1137,29 +1253,54 @@ async function loadRoadNetwork() {
   roadOrbitBtn.addEventListener('click', cycleOrbitTarget);
   status.appendChild(roadOrbitBtn);
 
+  // 無線を開くボタン(C と同じ動き)。キーの無い端末でも使えるようにする。
+  // ボタンにしておくのは、Space(バーナー)・M(マーカー投下)と手が競合しないため
+  roadRadioBtn = document.createElement('button');
+  roadRadioBtn.style.cssText = 'font-size:11px; padding:2px 6px; margin:4px 0 0 6px;';
+  roadRadioBtn.hidden = true;
+  roadRadioBtn.textContent = '無線(C)';
+  roadRadioBtn.addEventListener('click', toggleRadio);
+  status.appendChild(roadRadioBtn);
+
+  // 無線パネル。**問い合わせ形式**なので、開いている間だけ報告を出す
+  radioEl = document.createElement('div');
+  radioEl.id = 'road-radio';
+  radioEl.className = 'panel';
+  radioEl.style.display = 'none';
+  document.body.appendChild(radioEl);
+
   // #help も左下(bottom:12px / left:12px)に置かれているので、そのまま出すと重なる。
   // 操作説明の高さぶんだけ上へ逃がす。説明文が変わったときは再計算すること
-  positionRoadStatus();
-  addEventListener('resize', positionRoadStatus);
+  stackBottomLeft();
+  addEventListener('resize', stackBottomLeft);
 
   try {
-    const { group, graph, stats, ensureAround } = await loadRoads({
+    const { group, graph, stats, ensureAround, pendingAround } = await loadRoads({
       centerLon: AREA.lon, centerLat: AREA.lat, // 地形と同じ基準点を渡すこと
       getHeight: terrain.getHeight,
-      // 最初は離陸地点まわりだけ。気球が流れるぶんは飛行中に足していく
+      // 最初に読むのは**世界原点(=ターゲット)まわり**。離陸地点まわりではない
+      // (road.js の初期読み込みが ensureAround(0, 0, radiusM) なので)。
+      // 2号車の目的地側が最初から読めているのは好都合だが、離陸地点がターゲットから
+      // 3km以上離れると1号車の出発点側が未読になる。足りないぶんは飛行中に足していく
       // 上限は 48 → 64 枚(2026-08-28)。2号車がターゲットへ向かうぶんを見込んだ値。
       // 実測: 離陸地点〜ターゲットの経路帯(±4,000m)で最大38枚 + 飛行中の追加16〜21枚
       // ≒ 59枚 / 約4.2MB。64枚なら収まる(佐賀の1枚95KBで満杯でも約6MB)。
       // **古いタイルは捨てない。**捨てるとグラフから辺が消えて経路探索が壊れるし、
       // 引き返したときに読み直しになる。上限に達したら足すのをやめるだけ(stats.capped)
       radiusM: 3000, streamRadiusM: 2500, maxTilesTotal: 64,
-      onProgress: (done, total, msg) => { roadTextEl.textContent = `道路: ${msg}(${done}/${total})`; },
+      onProgress: (done, total, msg) => {
+        // たたんでいるときは summary しか見えないので、そちらにも出す
+        roadTextEl.textContent = `道路: ${msg}(${done}/${total})`;
+        roadBriefEl.textContent = `道路: ${msg}(${done}/${total})`;
+      },
     });
     roadStream = ensureAround;
+    roadPending = pendingAround;
     roadStats = stats;   // 走行中に増えるので、状態表示から見るために持っておく
 
     if (stats.edges === 0) {
       roadTextEl.textContent = 'この範囲には道路データがありませんでした(飛行には影響しません)';
+      roadBriefOverride = 'この範囲には道路データがありません';
       return;
     }
 
@@ -1167,61 +1308,186 @@ async function loadRoadNetwork() {
     document.getElementById('credit-road').hidden = false;
     window.roadGraph = graph;
 
-    // 第2段階: チェイスカーを道路の上に置いて走らせる。
-    // 走らせるだけで、風・高度計算・当たり判定には一切関与しない。
-    // ここで失敗しても道路の表示は残したいので、例外は個別に拾う
-    try {
-      chaseCar = createChaseCar({
-        graph, getHeight: terrain.getHeight,
-        startX: state.pos.x, startZ: state.pos.z, // 離陸地点のいちばん近くの道から出発する
-        kind: 'van', bodyColor: 0xf0f0f0,         // 1号車はハイエース型・白(2号車は自家用車型・濃い青)
-      });
-      if (chaseCar) {
-        scene.add(chaseCar.group);
-        // V の循環にチェイスカー視点が加わったことを操作説明にも出す
-        const hint = document.getElementById('help-view');
-        if (hint) hint.textContent = '(ゴンドラ/外部/車内:気球/車内:進行方向。Shift+Vで外部視点が車を回る)';
-        positionRoadStatus();   // 説明文が伸びたぶん、状態表示も上げ直す
-      }
-    } catch (err) {
-      console.warn('チェイスカーを置けませんでした:', err);
-      chaseCar = null;
-      roadSummary = `チェイスカーの生成に失敗: ${err && err.message ? err.message : err}`;
-    }
-
     // 第1段階の確認に必要な数字。とくに「最大連結成分」が高ければ、
     // タイル境界の継ぎ目がグローバル整数座標の一致だけで縫えていることになる
-    if (!roadSummary) {
-      roadSummary = `道路 z14: ${stats.tilesLoaded}枚 / ${(stats.bytes / 1024).toFixed(0)}KB / `
-        + `中心線 ${stats.centerlines.toLocaleString()}本 / ${(stats.lengthM / 1000).toFixed(1)}km / `
-        + `交差点 ${stats.nodes.toLocaleString()}点 / `
-        + `最大連結成分 ${(stats.largestComponentRatio * 100).toFixed(1)}%`
-        + (chaseCar ? ` / 走行可能 ${chaseCar.drivableEdges.toLocaleString()}区間`
-                    : ' / <b>走れる道が見つかりませんでした</b>');
-    }
+    roadSummary = `道路 z14: ${stats.tilesLoaded}枚 / ${(stats.bytes / 1024).toFixed(0)}KB / `
+      + `中心線 ${stats.centerlines.toLocaleString()}本 / ${(stats.lengthM / 1000).toFixed(1)}km / `
+      + `交差点 ${stats.nodes.toLocaleString()}点 / `
+      + `最大連結成分 ${(stats.largestComponentRatio * 100).toFixed(1)}%`;
+
+    // **地形(DEM)の範囲の外へは走らせない。**外では terrain.getHeight が 0(海面)を
+    // 返すので、車は地面の下に埋まって見えなくなる(2026-08-28に画面で発覚)。
+    // 道路タイルは地形より広く読めてしまうので、境界は道路側では守れない
+    const tm = terrain.map;
+    roadReady = {
+      graph,
+      bounds: {
+        minX: tm.minX, minZ: tm.minZ,
+        maxX: tm.minX + tm.n * terrain.tileMeters,
+        maxZ: tm.minZ + tm.n * terrain.tileMeters,
+      },
+    };
+    // **車は離陸してから置く。**離陸前の state.pos は世界原点(=ターゲット)なので、
+    // ここで置くと2台ともターゲットの真横に湧く(2026-08-28に画面で発覚)。
+    // devMode はブリーフィングを挟むぶん、道路の読み込みのほうが先に終わる。
+    // 離陸済みならこの場で、まだならブリーフィングの「離陸!」= startFlight から置く
+    if (started) spawnChaseCars();
   } catch (err) {
     // 道路も現時点では表示のみなので、失敗しても飛行は続けられる
     console.warn('道路の読み込みに失敗:', err);
     roadSummary = `道路を読み込めませんでした: ${err && err.message ? err.message : err}`;
+    roadBriefOverride = '道路を読み込めませんでした(飛行には影響しません)';
   }
 }
 
-// チェイスカーの状態表示(devMode + ?road=1 専用)。
-// 「車がいない」ときに、居ないのか・見えていないだけなのかを切り分けるために出す
+/**
+ * 第2段階: チェイスカーを道路の上に置いて走らせる(2台)。
+ * 走らせるだけで、風・高度計算・当たり判定には一切関与しない。
+ *
+ * **必ず離陸後に呼ぶこと。**離陸前の `state.pos` は世界原点(= ターゲット)で、
+ * そこで置くと2台ともターゲットの真横に湧く。`?dev=1` はブリーフィングを挟むので
+ * 道路の読み込みのほうが先に終わり、実際にそうなっていた(2026-08-28に画面で発覚)。
+ * 呼び出し口は2つ: 離陸済みなら loadRoadNetwork の末尾、そうでなければ startFlight。
+ */
+function spawnChaseCars() {
+  if (!roadReady || chaseCar) return;
+  const { graph, bounds } = roadReady;
+  // ここで失敗しても道路の表示は残したいので、例外は個別に拾う
+  try {
+    chaseCar = createChaseCar({
+      graph, getHeight: terrain.getHeight,
+      startX: state.pos.x, startZ: state.pos.z, // 離陸地点のいちばん近くの道から出発する
+      kind: 'van', bodyColor: 0xf0f0f0,         // 1号車はハイエース型・白(2号車は自家用車型・濃い青)
+      bounds,
+    });
+    if (!chaseCar) { roadSummary += ' / <b>走れる道が見つかりませんでした</b>'; return; }
+    scene.add(chaseCar.group);
+    roadSummary += ` / 走行可能 ${chaseCar.drivableEdges.toLocaleString()}区間`;
+
+    // 2号車。**離陸と同時に出発する**(遅らせない)。2台とも同じ速度表を使うので
+    // 追いつくことは原理的に起きないし、1号車は気球が150m離れるまで停まっている
+    // (地上風3〜5ktで60〜100秒)。「少し待つ」がいちばん危ない時間帯だった
+    const c1 = chaseCar.info();
+    chaseCar2 = createChaseCar({
+      graph, getHeight: terrain.getHeight,
+      startX: state.pos.x, startZ: state.pos.z,
+      kind: 'car', bodyColor: 0x2f5f9e,      // 2号車は自家用車型・濃い青(形で見分ける)
+      // ターゲットの手前で待機する。100m は**目安**で、規則上の距離ではない
+      // (立入制限の範囲は競技ごとに違い、一律の基準は無い)。
+      // **この内側へは経路も通さない。**通り抜けを許すと、立入らないための
+      // 100m を突っ切ってターゲットを通り過ぎる(2026-08-28に画面で発覚)
+      goal: { x: TARGET_XZ.x, z: TARGET_XZ.z, standoffM: 100 },
+      bounds,
+      // 1号車と重ならないように置く(実データ検証で決めた規則。20m未満 0件)
+      spawnAwayFrom: { x: c1.x, z: c1.z, minM: 20 },
+    });
+    if (chaseCar2) scene.add(chaseCar2.group);
+
+    // V の循環にチェイスカー視点が加わったことを操作説明にも出す
+    const hint = document.getElementById('help-view');
+    if (hint) {
+      hint.textContent = chaseCar2
+        ? '(ゴンドラ/外部/車内:気球/車内:進行方向/2号車:気球。Shift+Vで外部視点が車を回る)'
+        : '(ゴンドラ/外部/車内:気球/車内:進行方向。Shift+Vで外部視点が車を回る)';
+    }
+    const hintRadio = document.getElementById('help-radio');
+    if (hintRadio) hintRadio.hidden = false;
+    stackBottomLeft();   // 説明文が伸びたぶん、状態表示も上げ直す
+  } catch (err) {
+    console.warn('チェイスカーを置けませんでした:', err);
+    chaseCar = null;
+    chaseCar2 = null;
+    roadSummary += ` / チェイスカーの生成に失敗: ${err && err.message ? err.message : err}`;
+  }
+}
+
+// 距離の表し方(1km未満はm)。状態表示と無線報告で同じ言い方にする
+const distText = (m) => (m < 1000 ? `${Math.round(m)}m` : `${(m / 1000).toFixed(2)}km`);
+// 8方位。無線で「ターゲットの北東 約120m」と言うために使う
+const COMPASS_8 = ['北', '北東', '東', '南東', '南', '南西', '西', '北西'];
+const compass8 = (deg) => COMPASS_8[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
+
+/**
+ * 2号車の状態を3つのどれかに決める(仕様メモ10節)。
+ *
+ * **「これ以上進めない」は出発直後には判定できない。**タイルは走りながら足すので、
+ * 出発直後の A* が短い経路を返すのは道が無いからではなく**まだ読んでいないから**。
+ * ここで「行けません」と言うと、第2段階で車がデータの端を道の端と取り違えたのと
+ * 同じ間違いを、今度は**言葉で**やることになる。
+ * よって「blocked」と言ってよいのは次の**両方**が揃ったときだけ:
+ *   1. 経路を走り切って目的地以外の場所で停止した(halted かつ 到着していない)
+ *   2. その位置の周囲のタイル読み込みが済んでいる(足すものが無くなっている)
+ * タイル数が上限に達しているときは(2)を満たさないものとして扱う。
+ * これ以上読まないのはデータ側の都合で、**道が無いことの根拠にはならない**
+ */
+function secondCarState(c) {
+  if (c.arrived) return 'arrived';
+  if (!c.halted) return 'moving';
+  if (roadStats && roadStats.capped) return 'moving';
+  if (roadPending && roadPending(c.x, c.z) > 0) return 'moving';
+  return 'blocked';
+}
+
+// 隠しコマンド Shift+C: 開発用の状態表示を出し入れする(devMode + ?road=1)
+function toggleRoadStatus() {
+  if (!roadStatusEl) return;
+  roadStatusShown = !roadStatusShown;
+  roadStatusEl.style.display = roadStatusShown ? '' : 'none';
+  if (roadStatusShown) updateRoadReadout();   // 開いた瞬間に古い文言を見せない
+  stackBottomLeft();
+}
+
+// チェイスカーの状態表示(devMode + ?road=1 の Shift+C)。**2台ぶんを2行で出す。**
 function updateRoadReadout() {
   if (!roadStatusEl) return;
+  // 無線(C)は状態表示とは独立した機能なので、隠していても更新し続ける
+  if (radioOpen) updateRadio();
+  if (!roadStatusShown) return;
+
+  // キーの無い端末でも切り替えられるようにボタンを出す(Shift+V / C と同じ動き)。
+  // **たたんでいる間も更新しておく**(開いた瞬間に古い文言が見えないように)
+  roadOrbitBtn.hidden = !chaseCar;
+  if (chaseCar) {
+    roadOrbitBtn.textContent = `${orbitCar ? '外部視点を気球に戻す' : '外部視点で車を回る'}(Shift+V)`;
+  }
+  roadRadioBtn.hidden = !chaseCar2;
+  if (chaseCar2) roadRadioBtn.textContent = radioOpen ? '無線を閉じる(C)' : '無線(C)';
+
+  // たたんでいても要点(2台がどこにいるか)は summary に出す
+  roadBriefEl.textContent = briefLine();
+  // 中身は開いているときだけ作る(0.5秒ごとの innerHTML を無駄に回さない)
+  if (!roadStatusEl.open) return;
+
   let line = roadSummary || '道路を読み込み中…';
+  const viewNote = (i) => (carView && carIndex === i
+    ? ` / <b>車内から表示中(${carAim === 'balloon' ? '気球を見る' : '進行方向'})</b>` : '');
+  const orbitNote = (car) => (orbitCar === car ? ' / <b>外部視点で回っています</b>' : '');
   if (chaseCar) {
     const c = chaseCar.info();
     const d = Math.hypot(state.pos.x - c.x, state.pos.z - c.z);
-    // 気球から見た地上クルーの方位(コンパスの水色の印と同じ向き)
+    // 気球から見た地上クルーの方位(コンパスの水色の印と同じ向き)。
+    // **水色の印は1号車のぶん1つだけ**に保つ(2号車はターゲットへ向かうと分かっているので
+    // 方位を出す意味が薄い。印を増やすと読み取りにくくなる)
     const brg = (Math.atan2(c.x - state.pos.x, -(c.z - state.pos.z)) * 180 / Math.PI + 360) % 360;
-    line += `<br>チェイスカー: ${d < 1000 ? `${d.toFixed(0)}m` : `${(d / 1000).toFixed(2)}km`} / `
+    line += `<br>1号車: 気球まで ${distText(d)} / `
       + `${String(Math.round(brg)).padStart(3, '0')}°(コンパスの水色)/ `
       + `${c.speedKmh}km/h(目安)/ 幅員区分${c.rnkWidth} / `
-      + (c.stuck ? '停止' : c.waiting ? '待機' : `走行中(残り${c.routeLeft}区間)`)
-      + (carView ? ` / <b>車内から表示中(${carAim === 'balloon' ? '気球を見る' : '進行方向'})</b>` : '')
-      + (orbitCar ? ' / <b>外部視点で車を回っています</b>' : '');
+      // 「停止」は出さない。行き先が無くて止まっているだけで、気球が戻れば再開する
+      + (c.waiting ? '待機' : c.halted ? '待機(いま行ける道が無い)'
+        : `走行中(残り${c.routeLeft}区間)`)
+      + viewNote(0) + orbitNote(chaseCar);
+  }
+  if (chaseCar2) {
+    // **2号車は方位を出さない。**気球を追わないので気球からの方位は意味が薄い。
+    // 代わりに2号車にとって意味のある「ターゲットまで何m」を出す(**実測距離**)
+    const c = chaseCar2.info();
+    const st = secondCarState(c);
+    line += `<br>2号車: ターゲットまで ${distText(c.goalDistM)} / `
+      + `${c.speedKmh}km/h(目安)/ 幅員区分${c.rnkWidth} / `
+      + (st === 'arrived' ? '到着・待機'
+        : st === 'blocked' ? '<b>これ以上進めない(待機)</b>'
+        : `移動中(残り${c.routeLeft}区間)`)
+      + viewNote(1) + orbitNote(chaseCar2);
   }
   // タイルの上限に達したら黙って止まらず、そう言う。
   // 「車がデータの端で止まった」ときに原因を推測させないため(第2段階と同じ理由)
@@ -1230,11 +1496,64 @@ function updateRoadReadout() {
       + 'これ以上は読み込みません(飛行には影響しません)</b>';
   }
   roadTextEl.innerHTML = line;
-  // キーの無い端末でも切り替えられるようにボタンを出す(Shift+V と同じ動き)
-  roadOrbitBtn.hidden = !chaseCar;
-  if (chaseCar) {
-    roadOrbitBtn.textContent = `${orbitCar ? '外部視点を気球に戻す' : '外部視点で車を回る'}(Shift+V)`;
+}
+
+// たたんだときに summary に出す1行。**2台がどこにいるかだけ**に絞る。
+// 見る場所を切り替えている最中は、それが分かることのほうが優先
+function briefLine() {
+  if (roadBriefOverride) return roadBriefOverride;
+  if (!chaseCar) return roadReady ? '地上クルー: 離陸すると車が出ます' : '道路を読み込み中…';
+  const parts = [];
+  const c1 = chaseCar.info();
+  parts.push(`1号車 気球まで${distText(Math.hypot(state.pos.x - c1.x, state.pos.z - c1.z))}`);
+  if (chaseCar2) {
+    const c2 = chaseCar2.info();
+    const st = secondCarState(c2);
+    parts.push(`2号車 ターゲットまで${distText(c2.goalDistM)}`
+      + (st === 'arrived' ? '(待機)' : st === 'blocked' ? '(進めない)' : ''));
   }
+  if (carView) parts.push(`車内${carIndex === 0 ? '1号車' : '2号車'}`);
+  else if (orbitCar) parts.push('外部視点で車を回転中');
+  return `地上クルー: ${parts.join(' / ')}`;
+}
+
+// ---- 第3段階: 報告を車の現在地基準にする(まずは2号車から) ----
+// 2号車は到着後の位置が固定なので、動く1号車より検証が単純。ここで作った言い方を
+// あとで1号車へ展開する。
+//
+// **合否は言わない。**「回収可能/不可」「着陸に適する/適さない」は出さず、
+// 事実(どこまで道が続いているか、いま何m地点か、そこの地上風は何か)だけを言う。
+function toggleRadio() {
+  if (!radioEl || !chaseCar2) return;
+  radioOpen = !radioOpen;
+  radioEl.style.display = radioOpen ? '' : 'none';
+  if (radioOpen) updateRadio();
+  stackBottomLeft();
+}
+
+function updateRadio() {
+  if (!radioEl || !chaseCar2) return;
+  const c = chaseCar2.info();
+  const st = secondCarState(c);
+  // 車の現在地の地上風(対地高度0)。**報告地点が「車の現在地」になったのが第3段階**
+  const w = windAt(terrain.getHeight(c.x, c.z), c.x, c.z);
+  const windText = `地上風 ${String(Math.round(w.dir)).padStart(3, '0')}度 ${w.kt.toFixed(0)}ノット`;
+  // ターゲットから見て車がどちら側にいるか(8方位)
+  const brg = (Math.atan2(c.x - TARGET_XZ.x, -(c.z - TARGET_XZ.z)) * 180 / Math.PI + 360) % 360;
+
+  let msg;
+  if (st === 'moving') {
+    // まだ動いている(あるいは、まだ読んでいないタイルが残っている)。
+    // ここで「行けません」と言わないことが要点
+    msg = `2号車、ターゲットまで ${distText(c.goalDistM)}、移動中。`;
+  } else if (st === 'arrived') {
+    msg = `2号車、ターゲットの${compass8(brg)} ${distText(c.goalDistM)} で待機。${windText}。`;
+  } else {
+    msg = '2号車、<b>ここまでしか道が続いていません</b>。'
+      + `ターゲットまで ${distText(c.goalDistM)}、待機します。${windText}。`;
+  }
+  radioEl.innerHTML = `<b>無線(C で閉じる)</b><br>${msg}`;
+  stackBottomLeft();   // 文の長さで高さが変わる
 }
 
 function setupWindEditor() {
@@ -2829,6 +3148,9 @@ function startFlight(x, z) {
   document.getElementById('dev-briefing').style.display = 'none';
   flightReady = true;
   started = true;
+  // チェイスカーは**離陸地点が決まってから**置く。道路の読み込みがまだ終わって
+  // いなければ、終わった時点で loadRoadNetwork 側から置かれる
+  spawnChaseCars();
 }
 
 const balloon = buildBalloon();
@@ -3107,12 +3429,20 @@ renderer.setAnimationLoop(() => {
     // チェイスカー(devMode + ?road=1 のときだけ存在する)。気球を道なりに追う。
     // 表示上の存在で、風にも高度計算にも当たり判定にも関与しない
     if (chaseCar) chaseCar.update(dt, state.pos.x, state.pos.z);
+    // 2号車は気球を追わない(目的地はターゲット固定)。到着後は自分で何もしなくなる
+    if (chaseCar2) chaseCar2.update(dt);
 
-    // 気球が流れた先の道路タイルを足していく。3秒に1回だけ、しかも非同期なので
-    // フレームを止めない(ensureAround は多重呼び出しを自分で弾く)
+    // 道路タイルを足していく。3秒に1回だけ、しかも非同期なのでフレームを止めない
+    // (ensureAround は多重呼び出しを自分で弾く)。
+    // **足す先は気球と2号車で交互にする。**2号車は気球と反対方向へ向かうことがあり、
+    // 気球のまわりだけ読んでいると2号車が未読の端で頭打ちになる(第2段階で1号車が
+    // データの端で止まったのと同じ)。2号車が到着したら気球だけに戻す
     if (roadStream && performance.now() - lastRoadStream > 3000) {
       lastRoadStream = performance.now();
-      roadStream(state.pos.x, state.pos.z);
+      const c2 = chaseCar2 && chaseCar2.info();
+      const useCar2 = c2 && !c2.arrived && (roadStreamTurn++ & 1) === 1;
+      if (useCar2) roadStream(c2.x, c2.z);
+      else roadStream(state.pos.x, state.pos.z);
     }
     if (roadStatusEl && performance.now() - lastCarReadout > 500) {
       lastCarReadout = performance.now();
@@ -3139,10 +3469,10 @@ renderer.setAnimationLoop(() => {
       const cy = Math.cos(fpvPitch), sy = Math.sin(fpvPitch);
       const dir = new THREE.Vector3(Math.sin(fpvYaw) * cy, sy, -Math.cos(fpvYaw) * cy);
       camera.lookAt(camera.position.x + dir.x, camera.position.y + dir.y, camera.position.z + dir.z);
-    } else if (carView && chaseCar) {
+    } else if (carView && viewCar()) {
       // チェイスカーの車内から。**既定では気球を見る**(地上クルーは気球を目で追っている)。
       // ドラッグ量はそこからの相対角なので、ずらせば進行方向の道路も見られる
-      const c = chaseCar.info();
+      const c = viewCar().info();
       const headRad = (c.headingDeg * Math.PI) / 180;
       // 車体の中心より少し前に目を置く(ボンネット越しの視界にならないように)
       camera.position.set(

@@ -1,7 +1,12 @@
-// チェイスカー(地上クルー)の第2段階: road.js が組んだ道路グラフの上を車が走る。
+// チェイスカー(地上クルー): road.js が組んだ道路グラフの上を車が走る。
 //
 // **走らせるだけ。**風にも高度計算にも当たり判定にも一切関与しない。
-// 報告内容(第3段階)や指示(第4段階)はまだ実装していない。
+// 報告の文面は main.js 側(第3段階)。指示(第4段階)はまだ実装していない。
+//
+// 2台ある(どちらもこの関数で作る。違いは引数だけ):
+//   1号車 … 気球を自動追尾する(kind:'van')。既定の動き
+//   2号車 … 気球を追わず、**ターゲットへ向かって手前で待機する**(kind:'car' + goal)。
+//            到着したら追尾には戻らず、経路探索も辺上の移動計算も止まる = 1号車より軽い
 //
 // 設計の要点(tmp/チェイスカー仕様メモ.md):
 //   - 既定は自動追尾。プレイヤーは何もしなくてよい
@@ -94,11 +99,19 @@ class MinHeap {
  * 堂々巡りになる。**到達できた範囲でいちばん気球に近いノードまでの経路を返す**。
  * 実際のチェイスカーも、道が続いていなければ行けるところまで行って待つ。
  *
+ * @param {string|null} goalKey 目的地のノード。**null なら「goalPoint にいちばん近づけた場所」**
+ *   を目的地にする(2号車。立入らない範囲があるので、着く先を先に1点へ決められない)
+ * @param {object} [opts]
+ * @param {(k:string)=>boolean} [opts.blocked] そのノードへ**入ってはいけない**なら true
+ * @param {(e:object)=>boolean} [opts.blockedEdge] その辺を**通ってはいけない**なら true。
+ *   両端が範囲の外でも、**道そのものが範囲の中を通り抜ける**ことがある
+ * @param {{x:number,z:number}} [opts.goalPoint] ヒューリスティックの基準点
  * @returns {string[]|null} 辺キーの配列。1歩も進めないときだけ null
  */
-function findRoute(nodes, edges, startKey, goalKey) {
-  if (startKey === goalKey) return [];
-  const goal = nodes.get(goalKey);
+function findRoute(nodes, edges, startKey, goalKey, opts = {}) {
+  const { blocked = null, blockedEdge = null, goalPoint = null } = opts;
+  if (goalKey !== null && startKey === goalKey) return [];
+  const goal = goalPoint || nodes.get(goalKey);
   if (!goal) return null;
 
   const gScore = new Map([[startKey, 0]]);
@@ -110,6 +123,9 @@ function findRoute(nodes, edges, startKey, goalKey) {
 
   // 到達できた中でいちばん目的地に近かったノード(経路が引けなかったときの行き先)
   let bestKey = startKey, bestH = h(nodes.get(startKey));
+  // **出発点そのものが「入ってはいけない場所」なら、そこを行き先にしてはいけない。**
+  // 立入制限の範囲の中から出発した2号車が、その場に居座ってしまう
+  if (blocked && blocked(startKey)) bestH = Infinity;
 
   const reconstruct = (endKey) => {
     const route = [];
@@ -126,14 +142,22 @@ function findRoute(nodes, edges, startKey, goalKey) {
     if (cur.key === goalKey) return reconstruct(goalKey);
     const node = nodes.get(cur.key);
     if (!node) continue;
+    // 行き先の候補にできるのは**入ってよい場所だけ**。中から外へ出る途中で
+    // 通っただけの立入禁止ノードを行き先にしてはいけない
     const hc = h(node);
-    if (hc < bestH) { bestH = hc; bestKey = cur.key; }
+    if (hc < bestH && !(blocked && blocked(cur.key))) { bestH = hc; bestKey = cur.key; }
     const base = gScore.get(cur.key);
     for (const ek of node.edgeKeys) {
       const e = edges.get(ek);
       if (!e || isMotorway(e.props)) continue;
       const next = e.a === cur.key ? e.b : e.a;
       if (next === cur.key || closed.has(next)) continue;
+      // 立入らない範囲・地形の外へは**入らない**。ただし**一方通行の壁**にする:
+      // 中から外へは出られる。両方向を塞ぐと、範囲の中に置かれた車が
+      // 「周りが全部立入禁止」で永久に出られなくなる
+      const escaping = blocked && blocked(cur.key);
+      if (blocked && blocked(next) && !escaping) continue;
+      if (blockedEdge && blockedEdge(e) && !escaping) continue;
       const cost = e.lengthM / speedMps(e.props);
       const g = base + cost;
       if (gScore.has(next) && gScore.get(next) <= g) continue;
@@ -212,11 +236,20 @@ function buildCarMesh(kind = 'van', bodyColor = 0xf0f0f0) {
  * @param {number} opts.startZ
  * @param {'van'|'car'} [opts.kind='van'] 車種。1号車はハイエース型、2号車は自家用車型
  * @param {number} [opts.bodyColor=0xf0f0f0] 車体の色。2号車は濃い青
+ * @param {{x:number,z:number,standoffM:number,arriveBandM?:number}} [opts.goal=null]
+ *   **2号車**。気球を追わず、この点(ターゲット)へ向かい、standoffM の内側には
+ *   **入らずに**、寄れるところまで寄って待つ。到着したら**追尾には戻らない**
+ * @param {{x:number,z:number,minM:number}} [opts.spawnAwayFrom=null]
+ *   **2号車**。この点(1号車)から minM 以上離れた最寄りの端点に置く
+ * @param {{minX:number,maxX:number,minZ:number,maxZ:number}} [opts.bounds=null]
+ *   ここから外へは走らせない。**地形(DEM)の範囲**を渡すこと。外へ出ると
+ *   getHeight が 0(海面)を返し、車が地面の下に埋まって見えなくなる
  * @returns {{group:THREE.Group, update:Function, info:Function}|null}
  *   走れる道路が無ければ null
  */
 export function createChaseCar({
   graph, getHeight, startX = 0, startZ = 0, kind = 'van', bodyColor = 0xf0f0f0,
+  goal = null, spawnAwayFrom = null, bounds = null,
 }) {
   const { nodes, edges } = graph;
 
@@ -224,21 +257,120 @@ export function createChaseCar({
   const drivable = [...edges.values()].filter((e) => !isMotorway(e.props));
   if (drivable.length === 0) return null;
 
-  // 出発点に最も近い辺を選ぶ。頂点との距離で足りる(辺は数十m刻みなので)
-  let best = null, bestD = Infinity;
-  for (const e of drivable) {
-    const w = e.world;
-    for (let k = 0; k < w.length; k += 2) {
-      const d = (w[k] - startX) ** 2 + (w[k + 1] - startZ) ** 2;
-      if (d < bestD) { bestD = d; best = e; }
+  // その端点に接している走行可能な辺(車を置ける交差点かどうかの判定を兼ねる)。
+  // 2号車は、立入制限の範囲を通り抜ける道の上には置かない
+  const drivableAt = (nodeKey) => {
+    const n = nodes.get(nodeKey);
+    if (!n) return null;
+    for (const ek of n.edgeKeys) {
+      const e = edges.get(ek);
+      if (e && !isMotorway(e.props) && !blockedEdgeZone(e)) return e;
     }
-  }
-  // 辺のどちら側から走り始めるか。出発点(離陸地点)に近い端から始める
-  const bw = best.world;
-  const startForward =
-    (bw[0] - startX) ** 2 + (bw[1] - startZ) ** 2
-    <= (bw[bw.length - 2] - startX) ** 2 + (bw[bw.length - 1] - startZ) ** 2;
+    return null;
+  };
 
+  // ターゲットからの距離。2号車の立入判定と到着判定に使う
+  const goalDist = (x, z) => Math.hypot(x - goal.x, z - goal.z);
+
+  // **入ってはいけないノード。**2つの理由がある:
+  //
+  // 1. 地形(DEM)の外。terrain.js の getHeight はそこで 0(海面)を返すので、車は
+  //    **地面の下に埋まって見えなくなる**。実際に画面で「2台ともいなくなった」
+  //    (2026-08-28)。道路グラフは地形より広く読めるので、境界は道路側では守れない
+  // 2. ターゲットの立入制限の範囲(2号車のみ)。当初は「standoffM 以上離れた
+  //    最寄りの端点」を目的地にしていたが、**そこへ行く経路がターゲットの真横を
+  //    通り抜けていた**(実データで最接近17m → その後1,806m離れる)。
+  //    立入らないための 100m なのに、そこを突っ切っては意味がない。
+  //    → 範囲の中へは**入らない**ことにして、目的地は「入らずに寄れるいちばん近い場所」
+  //      にした。通り過ぎが原理的に起きなくなる
+  //
+  // ただし**一方通行の壁**にする(中から外へは出られる)。両方向を塞ぐと、
+  // 範囲の中に置かれた車が永久に出られない
+  const margined = bounds && {
+    minX: bounds.minX + 200, maxX: bounds.maxX - 200,
+    minZ: bounds.minZ + 200, maxZ: bounds.maxZ - 200,
+  };
+  function blockedNode(key) {
+    const n = nodes.get(key);
+    if (!n) return true;
+    if (margined && (n.x < margined.minX || n.x > margined.maxX
+      || n.z < margined.minZ || n.z > margined.maxZ)) return true;
+    if (goal && goalDist(n.x, n.z) < goal.standoffM) return true;
+    return false;
+  }
+  // **道そのものが立入制限の範囲を通り抜ける辺**は通らない(2号車のみ)。
+  // 端点だけを見ていたときは、両端が範囲の外でも道の途中がターゲットの
+  // すぐ横(実データで最接近16m)を通っていた。1辺につき1回だけ測って覚えておく
+  const edgeZoneCache = new Map();
+  function blockedEdgeZone(e) {
+    if (!goal) return false;
+    const hit = edgeZoneCache.get(e.key);
+    if (hit !== undefined) return hit;
+    const w = e.world;
+    let min = Infinity;
+    for (let k = 2; k < w.length; k += 2) {
+      const ax = w[k - 2], az = w[k - 1], bx = w[k], bz = w[k + 1];
+      const dx = bx - ax, dz = bz - az;
+      const len2 = dx * dx + dz * dz;
+      // 線分上でターゲットにいちばん近い点までの距離
+      const t = len2 < 1e-9 ? 0
+        : Math.max(0, Math.min(1, ((goal.x - ax) * dx + (goal.z - az) * dz) / len2));
+      const d = Math.hypot(ax + dx * t - goal.x, az + dz * t - goal.z);
+      if (d < min) min = d;
+    }
+    const blockedIt = min < goal.standoffM;
+    edgeZoneCache.set(e.key, blockedIt);
+    return blockedIt;
+  }
+
+  const routeOpts = { blocked: blockedNode, blockedEdge: blockedEdgeZone };
+
+  let best = null, startForward = true;
+
+  if (spawnAwayFrom) {
+    // **2号車の置き方。**当初は「1号車の次に近い**別の辺**」にしようとしたが、
+    // 実データ検証(既定5エリア×160通り)で **98/160 が間隔0m** だった。
+    // 次に近い辺はたいてい同じ交差点に接している別の辺で、辺が違っても端点は同じ座標になる。
+    // **「別の辺」は「別の場所」を意味しない。**
+    // → 「1号車から minM 以上離れた最寄りの端点」に改めた(間隔 中央値77m / 20m未満 0件)
+    //
+    // **立入制限の範囲の中には置かない**(2026-08-28に画面で発覚)。
+    // ターゲットのすぐ近くから離陸すると、いちばん近い端点が範囲の中に入ることがあり、
+    // 地上クルーが立入禁止区域の中に湧いてしまう。しかも中から出る経路は遠回りになりやすく、
+    // 渡良瀬では出るのに8.7km走っていた。置く時点で弾くのがいちばん簡単で確実
+    let awayKey = null, awayD = Infinity;
+    for (const [k, n] of nodes) {
+      if (Math.hypot(n.x - spawnAwayFrom.x, n.z - spawnAwayFrom.z) < spawnAwayFrom.minM) continue;
+      const d = (n.x - startX) ** 2 + (n.z - startZ) ** 2;
+      if (d >= awayD) continue;
+      if (blockedNode(k) || !drivableAt(k)) continue;
+      awayD = d; awayKey = k;
+    }
+    if (awayKey) {
+      best = drivableAt(awayKey);
+      startForward = best.a === awayKey;
+    }
+    // 見つからなければ下の既定の置き方に落ちる(1号車と重なりうるが、車が消えるよりよい)
+  }
+
+  if (!best) {
+    // 出発点に最も近い辺を選ぶ。頂点との距離で足りる(辺は数十m刻みなので)
+    let bestD = Infinity;
+    for (const e of drivable) {
+      const w = e.world;
+      for (let k = 0; k < w.length; k += 2) {
+        const d = (w[k] - startX) ** 2 + (w[k + 1] - startZ) ** 2;
+        if (d < bestD) { bestD = d; best = e; }
+      }
+    }
+    // 辺のどちら側から走り始めるか。出発点(離陸地点)に近い端から始める
+    const bw = best.world;
+    startForward =
+      (bw[0] - startX) ** 2 + (bw[1] - startZ) ** 2
+      <= (bw[bw.length - 2] - startX) ** 2 + (bw[bw.length - 1] - startZ) ** 2;
+  }
+
+  const startKey = startForward ? best.a : best.b;
   const group = buildCarMesh(kind, bodyColor);
 
   // 走行状態。edge を a→b または b→a のどちらかの向きに進む
@@ -250,10 +382,16 @@ export function createChaseCar({
     x: 0, z: 0,
     heading: 0,
     speed: 0,
-    stuck: false,   // 走れる道が見つからない状態(袋小路の行き止まりなど)
+    // 走れる道が見つからない状態。**永久停止ではない**(下の halted に一本化した)
+    stuck: false,
     route: [],      // これから通る辺キーの並び(A* の結果)
     sinceFind: 1e9, // 前回経路を引いてからのゲーム内秒。初回は即引く
-    waiting: false, // 気球の近くに着いたので待機中
+    waiting: false, // 気球の近くに着いたので待機中(1号車)
+    // 以下は2号車(goal あり)専用。**行き先のノードは持たない**
+    // (立入らない範囲があるので「どこまで寄れるか」は経路を引いてみないと決まらない)
+    halted: false,  // 経路が尽きて止まっている。**行き止まり(stuck)ではない**
+    arrived: false, // 目的地に着いた。ここから先は何もしない
+    moved: false,   // 一度でも辺の上を進んだか
     findMs: 0, findCount: 0,
   };
 
@@ -283,10 +421,19 @@ export function createChaseCar({
 
   // 経路を引き直す。**毎フレームではなく PATHFIND_INTERVAL 秒おき**
   function replan(fromNodeKey, targetX, targetZ) {
-    const goal = nearestNode(targetX, targetZ);
-    if (!goal) return;
     const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-    const route = findRoute(nodes, edges, fromNodeKey, goal);
+    let route;
+    if (goal) {
+      // 目的地のノードを先に1点へ決めない。**立入らない範囲があるので、
+      // 「どこまで寄れるか」は経路を引いてみないと分からない。**
+      // goalKey = null にすると、findRoute は「到達できた中でターゲットにいちばん
+      // 近いノード」までの経路を返す(タイルが増えれば、より近いところへ引き直される)
+      route = findRoute(nodes, edges, fromNodeKey, null, { ...routeOpts, goalPoint: goal });
+    } else {
+      const goalKey = nearestNode(targetX, targetZ);
+      if (!goalKey) return;
+      route = findRoute(nodes, edges, fromNodeKey, goalKey, routeOpts);
+    }
     car.findMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0;
     car.findCount++;
     car.sinceFind = 0;
@@ -313,6 +460,22 @@ export function createChaseCar({
       return true;
     }
 
+    // **2号車は角度による選択をしない。**目的地は決まっているので、経路が無いのに
+    // 「それらしい方向」へ走らせると、根拠のない先回りになる。その場に止まって、
+    // タイルが届いて経路が引き直されるのを待つ(到着していれば以後ずっと止まる)。
+    //
+    // 到着かどうかは「ターゲットの近くで止まったか」で分ける。立入らない範囲の
+    // すぐ外まで寄れていれば到着、道が続かずに遠くで止まったなら到着ではない。
+    // **この閾値は言い方(到着 / これ以上進めない)を選ぶためだけのもので、
+    // 画面には出さない**(出すのは実測距離)。実データでは到着 100〜200m 台に対して
+    // 届かない場合は 3〜8km と桁が違うので、間のどこで切っても結果は変わらない
+    if (goal) {
+      car.halted = true;
+      const d = goalDist(car.x, car.z);
+      car.arrived = d >= goal.standoffM && d < (goal.arriveBandM ?? goal.standoffM * 3);
+      return false;
+    }
+
     const want = bearing(targetX - node.x, targetZ - node.z);
     let pick = null, pickScore = Infinity, fallback = null, fallbackScore = Infinity;
     for (const ek of node.edgeKeys) {
@@ -320,6 +483,10 @@ export function createChaseCar({
       if (!e || isMotorway(e.props)) continue;
       const forward = e.a === nodeKey;
       if (!forward && e.b !== nodeKey) continue;
+      // 角度で選ぶときも、地形の外へは出さない(経路探索と同じ一方通行の壁)
+      const escaping = blockedNode(nodeKey);
+      if (blockedNode(forward ? e.b : e.a) && !escaping) continue;
+      if (blockedEdgeZone(e) && !escaping) continue;
       // その辺に入った直後の進行方向
       const w = e.world;
       const [x0, z0] = forward ? [w[0], w[1]] : [w[w.length - 2], w[w.length - 1]];
@@ -362,21 +529,45 @@ export function createChaseCar({
 
   /**
    * @param {number} dt      経過秒(ゲーム内時間。時間加速が掛かっていてよい)
-   * @param {number} targetX 追う相手(気球)の位置
+   * @param {number} targetX 追う相手(気球)の位置。**2号車では無視される**(目的地は goal)
    * @param {number} targetZ
    */
   function update(dt, targetX, targetZ) {
     if (!dt || car.stuck) return;
+    // 2号車は到着したらそこで終わり。経路探索も辺上の移動計算も止める(1号車より軽い)
+    if (car.arrived) { car.speed = 0; place(); return; }
+    if (goal) { targetX = goal.x; targetZ = goal.z; }
 
     // 経路の引き直し。交差点に着いたときではなく、時間で区切る
     car.sinceFind += dt;
     if (car.sinceFind >= PATHFIND_INTERVAL) replan(endNodeKey(), targetX, targetZ);
 
-    // 気球の真下まで来ていたら、その場で待つ。無意味に走り回らせない
-    car.waiting = Math.hypot(targetX - car.x, targetZ - car.z) < ARRIVE_M && car.route.length === 0;
-    if (car.waiting) { car.speed = 0; place(); return; }
+    if (goal) {
+      // 置かれた場所がそのまま行き先だった(離陸地点がターゲットのすぐそば)。
+      // 辺を1本走り切ってから止まるのを待たずに、その場で待機に入る
+      if (!car.moved && car.route.length === 0) {
+        const d = goalDist(car.x, car.z);
+        if (d >= goal.standoffM && d < (goal.arriveBandM ?? goal.standoffM * 3)) {
+          car.halted = true; car.arrived = true; car.speed = 0; place(); return;
+        }
+      }
+    } else {
+      // 気球の真下まで来ていたら、その場で待つ。無意味に走り回らせない
+      car.waiting =
+        Math.hypot(targetX - car.x, targetZ - car.z) < ARRIVE_M && car.route.length === 0;
+      if (car.waiting) { car.speed = 0; place(); return; }
+    }
+
+    // 止まっている(行き先が無かった)。**2台に共通の扱い。**
+    // 行き先が現れたら再開する: 2号車はタイルが届いて経路が引けたとき、
+    // 1号車は気球が地形の中へ戻ってきたとき
+    if (car.halted) {
+      if (!chooseNext(endNodeKey(), targetX, targetZ)) { car.speed = 0; place(); return; }
+      car.halted = false;
+    }
 
     car.speed = speedMps(car.edge.props);
+    car.moved = true;
 
     let remain = car.speed * dt;
     let guard = 0;
@@ -411,7 +602,15 @@ export function createChaseCar({
     car.seg++;
     car.t = 0;
     if (car.seg < segCount(car.edge)) return true;
-    if (!chooseNext(endNodeKey(), targetX, targetZ)) { car.stuck = true; return false; }
+    if (!chooseNext(endNodeKey(), targetX, targetZ)) {
+      // **止まるだけで、二度と動かない状態にはしない。**
+      // 地形の外へ出さない制限を入れたら、境界まで来た1号車が `stuck` で
+      // 永久停止した(実データで3件)。境界は行き止まりではなく「今は行き先が無い」
+      // だけで、気球が戻ってくれば再開できる。2号車も同じ(タイルが届けば再開する)
+      car.halted = true;
+      car.speed = 0;
+      return false;
+    }
     return true;
   }
 
@@ -426,6 +625,11 @@ export function createChaseCar({
       rdCtg: car.edge.props.rdCtg,
       stuck: car.stuck,
       waiting: car.waiting,
+      // 2号車(goal あり)専用。goalDistM は**実測距離**で、目安の 100m ではない
+      hasGoal: !!goal,
+      arrived: car.arrived,
+      halted: car.halted,
+      goalDistM: goal ? Math.hypot(goal.x - car.x, goal.z - car.z) : null,
       routeLeft: car.route.length,
       findMs: car.findMs,
       findCount: car.findCount,

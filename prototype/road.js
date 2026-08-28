@@ -190,7 +190,8 @@ function makeUnionFind() {
  * @param {number} [opts.maxTilesTotal=48] 読み込むタイル数の総上限(負荷の保険)。
  *   z14 は1枚 約2.05km四方。実測で1枚あたり 佐賀 約95KB / 上士幌 約22KB
  * @param {(done:number,total:number,msg:string)=>void} [opts.onProgress]
- * @returns {Promise<{group:THREE.Group, graph:object, stats:object, ensureAround:Function}>}
+ * @returns {Promise<{group:THREE.Group, graph:object, stats:object,
+ *   ensureAround:Function, pendingAround:Function}>}
  */
 export async function loadRoads({
   centerLon, centerLat, getHeight,
@@ -362,15 +363,11 @@ export async function loadRoads({
     }
   }
 
-  // 世界座標(m)の点のまわりで、まだ読んでいないタイルを読む。
-  // 走行中に呼ばれるので、二重に走らないようにする
-  let busy = false;
-  async function ensureAround(x, z, r = streamRadiusM, progress) {
-    if (busy) return 0;
+  // 世界座標(m)の点のまわりで、まだ読んでいないタイルを近い順に並べる
+  function wantTiles(x, z, r) {
     const fx = c.x + x / tileMeters;
     const fy = c.y + z / tileMeters;
     const span = Math.ceil(r / tileMeters);
-
     const want = [];
     for (let ty = Math.floor(fy) - span; ty <= Math.floor(fy) + span; ty++) {
       for (let tx = Math.floor(fx) - span; tx <= Math.floor(fx) + span; tx++) {
@@ -379,8 +376,28 @@ export async function loadRoads({
         if (dist <= r) want.push({ tx, ty, dist });
       }
     }
-    if (want.length === 0) return 0;
     want.sort((a, b) => a.dist - b.dist);
+    return want;
+  }
+
+  /**
+   * その点のまわりに、**まだ読んでいないタイルが何枚残っているか**。
+   * 第3段階の報告で使う。「ここまでしか道が続いていません」と言ってよいのは、
+   * 足すものが無くなってから(0枚)だけ。出発直後に短い経路しか引けないのは
+   * 道が無いからではなく**まだ読んでいないから**で、そこで「行けません」と言うと、
+   * 第2段階で車がデータの端を道の端と取り違えたのと同じ間違いを言葉でやることになる
+   */
+  function pendingAround(x, z, r = streamRadiusM) {
+    return wantTiles(x, z, r).length;
+  }
+
+  // 世界座標(m)の点のまわりで、まだ読んでいないタイルを読む。
+  // 走行中に呼ばれるので、二重に走らないようにする
+  let busy = false;
+  async function ensureAround(x, z, r = streamRadiusM, progress) {
+    if (busy) return 0;
+    const want = wantTiles(x, z, r);
+    if (want.length === 0) return 0;
 
     busy = true;
     let loaded = 0;
@@ -401,5 +418,5 @@ export async function loadRoads({
 
   await ensureAround(0, 0, radiusM, report);
   stats.ms = Math.round(performance.now() - t0);
-  return { group, graph: { nodes, edges }, stats, ensureAround };
+  return { group, graph: { nodes, edges }, stats, ensureAround, pendingAround };
 }

@@ -123,8 +123,28 @@
   #help { bottom: 12px; left: 12px; font-size: 12px; color: #cdd9e4; line-height: 1.6; }
   #help b { color: #ffd54f; font-family: Consolas, monospace; }
   #help a { color: #9ecfff; }
+  #help-keys summary { cursor: pointer; list-style: none; color: #9ecfff; }
+  #help-keys summary::-webkit-details-marker { display: none; }
+  #help-keys summary::after { content: ' ▸'; }
+  #help-keys[open] summary::after { content: ' ▾'; }
+  #help-keys[open] summary { margin-bottom: 4px; }
   #credit { bottom: 12px; right: 12px; font-size: 11px; color: #b8c4d0; max-width: 260px; }
   #credit a { color: #9ecfff; }
+  /* チェイスカーの状態表示(?dev=1&road=1 の隠しコマンド Shift+C で出す開発用)。
+     bottom は #help の高さに合わせて JS(stackBottomLeft)が入れる。
+     **z-index は付けない。**付けるとオーバーレイ(#setup-overlay 等は z-index:10)より
+     上に描かれ、「本格モード」の画面の上に残る(2026-08-28に画面で発覚)。
+     body の末尾に足すので、指定しなくてもキャンバスや他のパネルより上に出る */
+  #road-status {
+    left: 12px; font-size: 11px; max-width: min(60vw, 320px);
+  }
+  #road-status summary { cursor: pointer; list-style: none; }
+  #road-status summary::-webkit-details-marker { display: none; }
+  #road-status summary::after { content: ' ▸'; color: #9ecfff; }
+  #road-status[open] summary::after { content: ' ▾'; }
+  #road-status[open] summary { margin-bottom: 4px; }
+  #road-radio { left: 12px; font-size: 12px; line-height: 1.6; max-width: min(70vw, 360px); }
+
   #credit summary {
     cursor: pointer; list-style: none; text-align: right; white-space: nowrap;
   }
@@ -605,14 +625,22 @@
 
 <canvas id="compass" width="150" height="150"></canvas>
 
+<!-- 操作説明。キー割当が増えて背が高くなったので、**キー説明だけ**をたためるようにした。
+     **「本格モード」「使い方」は details の外に置く。**初めての人の入口なので、
+     たたんでも押せなければならない。summary の中に入れるとブラウザ任せの挙動になり、
+     実際に「たたんだ状態で押せない」状態になった(2026-08-28)。外に出せば
+     ただのリンクなので、たたんでいるかどうかに関係なく確実に押せる。
+     タッチ端末では .kbd-only ごとキー説明が消え、リンクだけの1行になる -->
 <div id="help" class="panel">
-  <div class="kbd-only">
+  <details id="help-keys" class="kbd-only">
+    <summary>操作説明</summary>
     <b>Space</b> バーナー(長押し) <b>R</b> リップライン(長押し) <b>M</b> マーカー投下<br>
     <b>V</b> 視点切替<span id="help-view">(ゴンドラ/外部)</span> <b>1-4</b> 時間加速 ×1/×2/×4/×8<br>
-    <b>P</b> パイバル表 表示/非表示 マウスドラッグ: 視点回転 / ホイール: ズーム<br>
-  </div>
-  <a id="setup-link" href="#" style="color:#9ecfff;">本格モード</a>
-  / <a id="howto-link" href="#" style="color:#9ecfff;">使い方</a>
+    <span id="help-radio" hidden><b>C</b> 無線(地上クルーへの問い合わせ)<br></span>
+    <b>P</b> パイバル表 表示/非表示 マウスドラッグ: 視点回転 / ホイール: ズーム
+  </details>
+  <a id="setup-link" href="#">本格モード</a>
+  / <a id="howto-link" href="#">使い方</a>
 </div>
 
 <div id="touch-controls">
@@ -657,6 +685,12 @@
     <button id="setup-city1" type="button" class="howto-dev-btn">街並み: 箱のみ(軽い)</button>
     <button id="setup-city2" type="button" class="howto-dev-btn">街並み: 写真つき(重い)</button>
     <button id="setup-city0" type="button" class="howto-dev-btn" hidden>街並みを消す</button>
+    <div class="howto-label">チェイスカー(地上クルー)</div>
+    <div class="howto-note">実在の道路を走る車が2台出ます(表示のみ。飛行の挙動は変わりません)。
+    1号車は気球を追い、2号車はターゲット手前で待って地上風を報告します(<b>C</b>で無線)。
+    開発途中版の機能なので、押すと開発途中版に切り替わります。</div>
+    <button id="setup-road1" type="button" class="howto-dev-btn">チェイスカーを出す</button>
+    <button id="setup-road0" type="button" class="howto-dev-btn" hidden>チェイスカーを消す</button>
     <button id="setup-close" type="button" class="howto-close-btn">閉じる</button>
   </div>
 </div>
