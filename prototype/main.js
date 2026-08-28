@@ -436,7 +436,16 @@ let fpvYaw = 0, fpvPitch = 0;
 let carView = false;
 let carAim = 'balloon';
 let carYaw = 0, carPitch = 0;
-const CAR_EYE_HEIGHT = 1.5;
+// 目の高さは**車の床から**測る(車は道路の描画面 1.5m の上に乗っているので、
+// 地面から測ると座席がその分だけ低くなる)
+const CAR_EYE_ABOVE_FLOOR = 0.9;
+// 隠しコマンド Shift+V(devMode + ?road=1): **外部視点が何を回るか**を切り替える。
+// V(ゴンドラ/車内)とは層が違う操作なので、V の循環は長くならない。
+// OrbitControls はそのまま使い、controls.target の行き先だけを差し替える
+let orbitCar = null;                  // null なら気球を回る(既定)
+const CAR_ORBIT_LIFT = 0.7;           // 回る中心の高さ(車の床から車体の真ん中まで)
+const prevOrbitPos = new THREE.Vector3();
+let hasPrevOrbitPos = false;
 const EYE_HEIGHT = 1.85;
 const LOOK_SPEED = 0.0038;
 const PITCH_LIMIT = THREE.MathUtils.degToRad(85);
@@ -460,11 +469,45 @@ function toggleFpv() {
     fpv = true;
   }
   applyViewMode();
-  if (!fpv && !carView) {
+  // 車を回っているときは、外部視点の位置決めは下の orbit 側に任せる
+  if (!fpv && !carView && !orbitCar) {
     // ゴンドラ/チェイスカー視点から戻るときは、見ていた方向の後方に回り込む
     const horiz = new THREE.Vector3(Math.sin(fpvYaw), 0, -Math.cos(fpvYaw));
     const tgt = new THREE.Vector3(state.pos.x, state.pos.y + 12, state.pos.z);
     camera.position.copy(tgt).addScaledVector(horiz, -90).add(new THREE.Vector3(0, 35, 0));
+    controls.target.copy(tgt);
+  }
+}
+
+// Shift+V: 外部視点で回る対象を 気球 → 1号車(→ 2号車…)→ 気球 と巡回する。
+// 車が増えてもこの配列に足すだけで済む
+const orbitCars = () => (chaseCar ? [chaseCar] : []);
+function cycleOrbitTarget() {
+  const cars = orbitCars();
+  if (cars.length === 0) return;                 // 車がいなければ何も起きない
+  const i = orbitCar ? cars.indexOf(orbitCar) : -1;
+  orbitCar = i + 1 < cars.length ? cars[i + 1] : null;
+  hasPrevOrbitPos = false;
+
+  // 車を回るときは外部視点に出る(ゴンドラ・車内のままでは切り替えが見えない)
+  fpv = false;
+  carView = false;
+  applyViewMode();
+
+  if (orbitCar) {
+    // 車の斜め後ろに置く。実物大(4.4m)なので、気球のときより ずっと近くから見る
+    const c = orbitCar.info();
+    const head = (c.headingDeg * Math.PI) / 180;
+    const tgt = new THREE.Vector3(c.x, c.y + CAR_ORBIT_LIFT, c.z);
+    camera.position.set(
+      tgt.x - Math.sin(head) * 16 + Math.cos(head) * 6,
+      tgt.y + 7,
+      tgt.z + Math.cos(head) * 16 + Math.sin(head) * 6,
+    );
+    controls.target.copy(tgt);
+  } else {
+    const tgt = new THREE.Vector3(state.pos.x, state.pos.y + 12, state.pos.z);
+    camera.position.copy(tgt).add(new THREE.Vector3(60, 35, 60));
     controls.target.copy(tgt);
   }
 }
@@ -483,7 +526,8 @@ function cycleTimeScale() {
 addEventListener('keydown', (e) => {
   if (e.code === 'Space') { input.burner = true; e.preventDefault(); }
   if (e.code === 'KeyR') input.rip = true;
-  if (e.code === 'KeyV') toggleFpv();
+  // Shift+V は隠しコマンド(devMode + ?road=1 で車がいるときだけ効く)
+  if (e.code === 'KeyV') { if (e.shiftKey) cycleOrbitTarget(); else toggleFpv(); }
   if (e.code === 'KeyM' && flightReady) dropMarker();
   if (e.code === 'KeyP') togglePibal();
   if (e.code === 'KeyW' && devMode) toggleWindCalcDebug(); // 隠しコマンド: 気圧配置モデルの計算過程表示(devMode専用)
@@ -572,7 +616,23 @@ function applyViewMode() {
     controls.enabled = true;
   }
   // 運転席にいる間は自分の車体を描かない(目の前が箱で塞がるため)
-  if (chaseCar) chaseCar.group.visible = !carView;
+  if (chaseCar) {
+    chaseCar.group.visible = !carView;
+    // 上空から車を探すための60mの柱は、車のそばで回すと画面を貫く。外から見る間は消す
+    chaseCar.setMarkVisible(!orbitCar);
+  }
+
+  // 車を回るときは寄れるようにする。既定の 25m は実物大(4.4m)の車には遠すぎる。
+  // 併せて、地面より下へ回り込まないよう仰角の下限も水平より上に留める
+  if (orbitCar) {
+    controls.minDistance = 6;
+    controls.maxDistance = 300;
+    controls.maxPolarAngle = Math.PI * 0.48;
+  } else {
+    controls.minDistance = 25;
+    controls.maxDistance = 600;
+    controls.maxPolarAngle = Math.PI * 0.52;
+  }
 
   // 気球を見るときだけ画角を絞る。1〜2km先にあることも多く、既定の60°では点にしかならない
   // (「目を凝らして見ている」ぶんだけで、双眼鏡ほどには寄せない)。
@@ -1043,6 +1103,16 @@ let roadStream = null;    // 走行中に道路タイルを足す関数(loadRoad
 let lastRoadStream = 0;   // 前回タイルを足した時刻(ミリ秒)
 let roadStatusEl = null;  // 道路・チェイスカーの状態表示(devMode + ?road=1 のときだけ)
 let roadSummary = '';     // 読み込み結果の要約(状態表示の1行目に出し続ける)
+let roadStats = null;     // loadRoads が返す統計(tilesLoaded / capped は走行中も更新される)
+let roadTextEl = null;    // 状態の文(0.5秒ごとに作り直す)
+let roadOrbitBtn = null;  // Shift+V と同じ切り替えのボタン(作り直さない)
+
+// 道路の状態表示を、左下の操作説明(#help)の上に逃がす
+function positionRoadStatus() {
+  if (!roadStatusEl) return;
+  const help = document.getElementById('help');
+  roadStatusEl.style.bottom = `${12 + (help ? help.offsetHeight : 0) + 8}px`;
+}
 let lastCarReadout = 0;
 if (devMode && mainParams.has('road')) loadRoadNetwork();
 
@@ -1052,22 +1122,44 @@ async function loadRoadNetwork() {
   status.style.cssText =
     'position:fixed; left:12px; bottom:12px; z-index:50; font-size:11px;'
     + ' max-width:min(60vw,320px); transition:opacity 1.2s;';
-  status.textContent = '道路(地理院ベクトルタイル)を読み込み中…';
   document.body.appendChild(status);
   roadStatusEl = status;   // 以降はフレームごとにチェイスカーの状態を書き足す
+
+  // 状態の文とボタンを分けておく。文は 0.5秒ごとに作り直すので、同じ入れ物に
+  // ボタンを混ぜると、押している途中で差し替わってクリックが取りこぼされる。
+  // **以降 status.textContent には触らないこと**(子要素ごと消えてボタンが失われる)
+  roadTextEl = document.createElement('div');
+  roadTextEl.textContent = '道路(地理院ベクトルタイル)を読み込み中…';
+  status.appendChild(roadTextEl);
+  roadOrbitBtn = document.createElement('button');
+  roadOrbitBtn.style.cssText = 'font-size:11px; padding:2px 6px; margin-top:4px;';
+  roadOrbitBtn.hidden = true;                    // 車ができるまで出さない
+  roadOrbitBtn.addEventListener('click', cycleOrbitTarget);
+  status.appendChild(roadOrbitBtn);
+
+  // #help も左下(bottom:12px / left:12px)に置かれているので、そのまま出すと重なる。
+  // 操作説明の高さぶんだけ上へ逃がす。説明文が変わったときは再計算すること
+  positionRoadStatus();
+  addEventListener('resize', positionRoadStatus);
 
   try {
     const { group, graph, stats, ensureAround } = await loadRoads({
       centerLon: AREA.lon, centerLat: AREA.lat, // 地形と同じ基準点を渡すこと
       getHeight: terrain.getHeight,
       // 最初は離陸地点まわりだけ。気球が流れるぶんは飛行中に足していく
-      radiusM: 3000, streamRadiusM: 2500, maxTilesTotal: 48,
-      onProgress: (done, total, msg) => { status.textContent = `道路: ${msg}(${done}/${total})`; },
+      // 上限は 48 → 64 枚(2026-08-28)。2号車がターゲットへ向かうぶんを見込んだ値。
+      // 実測: 離陸地点〜ターゲットの経路帯(±4,000m)で最大38枚 + 飛行中の追加16〜21枚
+      // ≒ 59枚 / 約4.2MB。64枚なら収まる(佐賀の1枚95KBで満杯でも約6MB)。
+      // **古いタイルは捨てない。**捨てるとグラフから辺が消えて経路探索が壊れるし、
+      // 引き返したときに読み直しになる。上限に達したら足すのをやめるだけ(stats.capped)
+      radiusM: 3000, streamRadiusM: 2500, maxTilesTotal: 64,
+      onProgress: (done, total, msg) => { roadTextEl.textContent = `道路: ${msg}(${done}/${total})`; },
     });
     roadStream = ensureAround;
+    roadStats = stats;   // 走行中に増えるので、状態表示から見るために持っておく
 
     if (stats.edges === 0) {
-      status.textContent = 'この範囲には道路データがありませんでした(飛行には影響しません)';
+      roadTextEl.textContent = 'この範囲には道路データがありませんでした(飛行には影響しません)';
       return;
     }
 
@@ -1082,12 +1174,14 @@ async function loadRoadNetwork() {
       chaseCar = createChaseCar({
         graph, getHeight: terrain.getHeight,
         startX: state.pos.x, startZ: state.pos.z, // 離陸地点のいちばん近くの道から出発する
+        kind: 'van', bodyColor: 0xf0f0f0,         // 1号車はハイエース型・白(2号車は自家用車型・濃い青)
       });
       if (chaseCar) {
         scene.add(chaseCar.group);
         // V の循環にチェイスカー視点が加わったことを操作説明にも出す
         const hint = document.getElementById('help-view');
-        if (hint) hint.textContent = '(ゴンドラ/外部/車内:気球/車内:進行方向)';
+        if (hint) hint.textContent = '(ゴンドラ/外部/車内:気球/車内:進行方向。Shift+Vで外部視点が車を回る)';
+        positionRoadStatus();   // 説明文が伸びたぶん、状態表示も上げ直す
       }
     } catch (err) {
       console.warn('チェイスカーを置けませんでした:', err);
@@ -1126,9 +1220,21 @@ function updateRoadReadout() {
       + `${String(Math.round(brg)).padStart(3, '0')}°(コンパスの水色)/ `
       + `${c.speedKmh}km/h(目安)/ 幅員区分${c.rnkWidth} / `
       + (c.stuck ? '停止' : c.waiting ? '待機' : `走行中(残り${c.routeLeft}区間)`)
-      + (carView ? ` / <b>車内から表示中(${carAim === 'balloon' ? '気球を見る' : '進行方向'})</b>` : '');
+      + (carView ? ` / <b>車内から表示中(${carAim === 'balloon' ? '気球を見る' : '進行方向'})</b>` : '')
+      + (orbitCar ? ' / <b>外部視点で車を回っています</b>' : '');
   }
-  roadStatusEl.innerHTML = line;
+  // タイルの上限に達したら黙って止まらず、そう言う。
+  // 「車がデータの端で止まった」ときに原因を推測させないため(第2段階と同じ理由)
+  if (roadStats && roadStats.capped) {
+    line += `<br><b>道路タイルが上限(${roadStats.tilesLoaded}枚)に達しました。`
+      + 'これ以上は読み込みません(飛行には影響しません)</b>';
+  }
+  roadTextEl.innerHTML = line;
+  // キーの無い端末でも切り替えられるようにボタンを出す(Shift+V と同じ動き)
+  roadOrbitBtn.hidden = !chaseCar;
+  if (chaseCar) {
+    roadOrbitBtn.textContent = `${orbitCar ? '外部視点を気球に戻す' : '外部視点で車を回る'}(Shift+V)`;
+  }
 }
 
 function setupWindEditor() {
@@ -3041,7 +3147,7 @@ renderer.setAnimationLoop(() => {
       // 車体の中心より少し前に目を置く(ボンネット越しの視界にならないように)
       camera.position.set(
         c.x + Math.sin(headRad) * 0.8,
-        terrain.getHeight(c.x, c.z) + CAR_EYE_HEIGHT,
+        c.y + CAR_EYE_ABOVE_FLOOR,
         c.z - Math.cos(headRad) * 0.8,
       );
       // 見る基準。'balloon' なら気球の方向(車が曲がっても気球を見続ける)、
@@ -3059,6 +3165,16 @@ renderer.setAnimationLoop(() => {
       const cy = Math.cos(pitch), sy = Math.sin(pitch);
       const dir = new THREE.Vector3(Math.sin(yaw) * cy, sy, -Math.cos(yaw) * cy);
       camera.lookAt(camera.position.x + dir.x, camera.position.y + dir.y, camera.position.z + dir.z);
+    } else if (orbitCar) {
+      // 外部視点でチェイスカーを回る(Shift+V)。気球のときと同じく、
+      // 回る中心を車に合わせ、カメラも同じだけ平行移動させる。
+      // OrbitControls はそのままなので、ドラッグで回す・寄る はいつもどおり効く
+      const c = orbitCar.info();
+      const tgt = new THREE.Vector3(c.x, c.y + CAR_ORBIT_LIFT, c.z);
+      if (hasPrevOrbitPos) camera.position.add(tgt.clone().sub(prevOrbitPos));
+      controls.target.copy(tgt);
+      prevOrbitPos.copy(tgt);
+      hasPrevOrbitPos = true;
     } else {
       // カメラは気球に追従(ターゲット+同じ分だけ平行移動)
       const delta = new THREE.Vector3().subVectors(state.pos, prevPos);

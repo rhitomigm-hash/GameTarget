@@ -27,7 +27,10 @@ const BVMAP = 'https://cyberjapandata.gsi.go.jp/xyz/experimental_bvmap';
 const ROAD_Z = 14;               // 単一ズーム。ここを変えるとグローバル整数統合の前提が崩れる
 const EARTH_CIRC = 40075016.686;
 const DRAPE_STEP = 25;           // 地形に貼るときの分割間隔(m)。z14 の頂点間隔より細かくする
-const DRAPE_LIFT = 1.5;          // 地面から浮かせる量(m)。地形との z-fighting を避ける
+// 地面から浮かせる量(m)。地形との z-fighting を避ける。
+// **チェイスカーはこの高さを路面として走る**(下げると z-fighting が戻り、
+// 合わせないと道路の線が車体を突き抜ける)。chasecar.js が読む
+export const DRAPE_LIFT = 1.5;
 
 // 幅員区分(rnkWidth)ごとの色。コード値は地理院の仕様に従う:
 //   0:3m未満 / 1:3〜5.5m / 2:5.5〜13m / 3:13〜19.5m / 4:19.5m以上 / 5:その他 / 6:不明

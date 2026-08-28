@@ -15,7 +15,7 @@
 //   そこで A*(コストは所要時間)で経路を出し、**数秒おきに引き直す**方式にした。
 //   毎フレームではないので負荷は軽い(実測は下の PATHFIND_INTERVAL の注記を参照)
 import * as THREE from 'three';
-import { isMotorway } from './road.js';
+import { isMotorway, DRAPE_LIFT } from './road.js';
 
 // 幅員区分(rnkWidth)ごとの走行速度の**目安**(km/h)。
 // 実測に基づく基準ではないので、UI に出すときも「目安」と明示すること。
@@ -23,7 +23,10 @@ import { isMotorway } from './road.js';
 const SPEED_KMH = [20, 30, 40, 50, 50, 30, 30];
 const DEFAULT_SPEED_KMH = 30;
 
-const CAR_LIFT = 0.6;      // 路面から浮かせる量(m)
+// 車を置く高さ(m)。**道路の描画面と同じにする。**
+// 地面基準(0.6m)にしていたときは、1.5m に浮かせて描いた道路の線が
+// 車体の窓のあたりを突き抜けていた(外部視点で車のそばに寄って発覚、2026-08-28)
+const CAR_LIFT = DRAPE_LIFT;
 const TURN_RATE = 3.0;     // 車体の向きが追従する速さ(rad/s)。カクつきを抑える見た目だけの処理
 const MAX_SPEED_MPS = 50 / 3.6;  // A* のヒューリスティックに使う上限速度
 const PATHFIND_INTERVAL = 5;     // 経路を引き直す間隔(ゲーム内秒)。毎フレームではない
@@ -144,24 +147,45 @@ function findRoute(nodes, edges, startKey, goalKey) {
   return bestKey === startKey ? null : reconstruct(bestKey);
 }
 
-// 車体(見た目)。上空から探せるように、細い目印を1本立てておく
-function buildCarMesh() {
+// 車体(見た目)。2台を**形で**見分けられるようにする:
+//   'van' … 1号車。ハイエース型(背の高い箱に短い鼻)。機材と回収要員を積む車
+//   'car' … 2号車。自家用車型(低くて短い)。ターゲット付近へ先行する車
+//
+// **前(鼻)は必ず局所 -Z に置くこと。**進行方向は place() の rotation.y = -heading で
+// 局所 -Z に一致する。前後を逆に作ると、走行中に後ろ向きに走って見える
+const CAR_SHAPES = {
+  van: {
+    // 実車のハイエース(標準ボディ)に近い寸法: 全長4.7m / 全幅1.7m / 全高2.0m
+    lower: { w: 1.70, h: 1.05, l: 4.70, y: 0.52, z: 0 },
+    cabin: { w: 1.64, h: 0.90, l: 3.70, y: 1.50, z: 0.45 },  // 箱が後ろ寄り = 鼻が短い
+    glass: { w: 1.56, h: 0.72, l: 0.10, y: 1.50, z: -1.40 },
+  },
+  car: {
+    // セダン/ハッチバック相当: 全長4.3m / 全幅1.75m / 全高1.45m
+    lower: { w: 1.75, h: 0.78, l: 4.30, y: 0.39, z: 0 },
+    cabin: { w: 1.58, h: 0.56, l: 2.10, y: 1.06, z: 0.25 },  // 客室は中央やや後ろ
+    glass: { w: 1.50, h: 0.46, l: 0.10, y: 1.06, z: -0.80 },
+  },
+};
+
+function buildCarMesh(kind = 'van', bodyColor = 0xf0f0f0) {
   const group = new THREE.Group();
-  group.name = 'chase-car';
+  group.name = `chase-car-${kind}`;
+  const s = CAR_SHAPES[kind] ?? CAR_SHAPES.van;
 
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(1.8, 1.4, 4.4),
-    new THREE.MeshLambertMaterial({ color: 0xf0f0f0 }),
-  );
-  body.position.y = 0.7;
-  group.add(body);
+  const box = (d, color) => {
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(d.w, d.h, d.l),
+      new THREE.MeshLambertMaterial({ color }),
+    );
+    m.position.set(0, d.y, d.z);
+    return m;
+  };
 
-  const roof = new THREE.Mesh(
-    new THREE.BoxGeometry(1.6, 0.7, 2.2),
-    new THREE.MeshLambertMaterial({ color: 0x2a3442 }),
-  );
-  roof.position.set(0, 1.7, -0.2);
-  group.add(roof);
+  group.add(box(s.lower, bodyColor));
+  group.add(box(s.cabin, bodyColor));
+  // フロントガラス。**どちらが前か**を一目で分かるようにするための面(局所 -Z 側)
+  group.add(box(s.glass, 0x2a3442));
 
   // 上空からの目印。1000ft を超えると車そのものは1px にもならないので、
   // 見つけるための細い柱を立てる(地形には隠れる = 尾根の向こうなら見えない)
@@ -174,6 +198,7 @@ function buildCarMesh() {
   mark.position.y = 30;
   group.add(mark);
 
+  group.userData.mark = mark;   // 車のそばで見るときは邪魔になるので消せるようにしておく
   return group;
 }
 
@@ -185,10 +210,14 @@ function buildCarMesh() {
  * @param {(x:number,z:number)=>number} opts.getHeight terrain.js の getHeight
  * @param {number} opts.startX  初期位置(この点に最も近い道路から走り始める)
  * @param {number} opts.startZ
+ * @param {'van'|'car'} [opts.kind='van'] 車種。1号車はハイエース型、2号車は自家用車型
+ * @param {number} [opts.bodyColor=0xf0f0f0] 車体の色。2号車は濃い青
  * @returns {{group:THREE.Group, update:Function, info:Function}|null}
  *   走れる道路が無ければ null
  */
-export function createChaseCar({ graph, getHeight, startX = 0, startZ = 0 }) {
+export function createChaseCar({
+  graph, getHeight, startX = 0, startZ = 0, kind = 'van', bodyColor = 0xf0f0f0,
+}) {
   const { nodes, edges } = graph;
 
   // 走行可能な辺だけを対象にする(高速道路は除く)
@@ -210,7 +239,7 @@ export function createChaseCar({ graph, getHeight, startX = 0, startZ = 0 }) {
     (bw[0] - startX) ** 2 + (bw[1] - startZ) ** 2
     <= (bw[bw.length - 2] - startX) ** 2 + (bw[bw.length - 1] - startZ) ** 2;
 
-  const group = buildCarMesh();
+  const group = buildCarMesh(kind, bodyColor);
 
   // 走行状態。edge を a→b または b→a のどちらかの向きに進む
   const car = {
@@ -318,7 +347,11 @@ export function createChaseCar({ graph, getHeight, startX = 0, startZ = 0 }) {
   // **待機中も含めて必ず呼ぶこと。**呼ばないと group が原点(y=0)のまま地面に埋まる
   function place() {
     group.position.set(car.x, getHeight(car.x, car.z) + CAR_LIFT, car.z);
-    group.rotation.y = car.heading;
+    // **-heading であること。**この世界の進行方向は (sinθ, -cosθ) で、three.js の
+    // Y回転で局所 -Z がそこを向くのは -θ のとき。+θ だと**真後ろ**を向く
+    // (東へ走る例: θ=π/2、-θ なら局所-Zは東、+θ なら西)。
+    // 車体が前後ほぼ対称の箱だった間は見えなかった。形を分けたことで顕在化(2026-08-28)
+    group.rotation.y = -car.heading;
   }
 
   // 初期位置を辺の先頭に置く
@@ -386,6 +419,7 @@ export function createChaseCar({ graph, getHeight, startX = 0, startZ = 0 }) {
   function info() {
     return {
       x: car.x, z: car.z,
+      y: group.position.y,   // 車の床の高さ。視点の目の位置もこれを基準にする
       headingDeg: ((car.heading * 180) / Math.PI + 360) % 360,
       speedKmh: Math.round((car.speed * 3600) / 1000),
       rnkWidth: car.edge.props.rnkWidth,
@@ -398,5 +432,9 @@ export function createChaseCar({ graph, getHeight, startX = 0, startZ = 0 }) {
     };
   }
 
-  return { group, update, info, drivableEdges: drivable.length };
+  // 上空から探すための目印の柱を出し入れする。車のすぐそばで見るときは、
+  // 画面を貫く柱になってしまうので消す
+  function setMarkVisible(v) { group.userData.mark.visible = v; }
+
+  return { group, update, info, setMarkVisible, drivableEdges: drivable.length };
 }
