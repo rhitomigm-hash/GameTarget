@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SORA — 熱気球フライトシミュレーター / 操作方法</title>
+<meta name="description" content="SORA は実在の日本の地形を3D化した空間で熱気球を飛ばすフライトシミュレーターです。操作方法とはじめかた。">
+<style>
+  :root {
+    --bg: #0b1016;
+    --bg2: #121a24;
+    --line: #22303f;
+    --fg: #dfe7ee;
+    --dim: #93a3b3;
+    --accent: #9ecfff;
+    --key: #ffd54f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, system-ui, sans-serif;
+    line-height: 1.8;
+    -webkit-text-size-adjust: 100%;
+  }
+  a { color: var(--accent); }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 20px 80px; }
+
+  /* ---- ヘッダー ---- */
+  header {
+    text-align: center;
+    padding: 64px 20px 48px;
+    border-bottom: 1px solid var(--line);
+    background: radial-gradient(120% 90% at 50% 0%, #17253a 0%, var(--bg) 70%);
+  }
+  .logo { font-size: 44px; letter-spacing: 14px; color: var(--accent); margin: 0 0 6px; font-weight: 400; }
+  .tagline { color: var(--dim); margin: 0 0 28px; font-size: 15px; }
+  .cta {
+    display: inline-block; padding: 14px 34px; border-radius: 6px;
+    background: #2a6fb0; color: #fff; text-decoration: none; font-size: 17px;
+    border: 1px solid #3d8ad4;
+  }
+  .cta:hover { background: #337fc6; }
+  .cta-note { color: var(--dim); font-size: 12px; margin-top: 12px; }
+
+  /* ---- 本文 ---- */
+  h2 {
+    font-size: 19px; color: var(--accent); font-weight: 500;
+    margin: 48px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--line);
+    letter-spacing: 1px;
+  }
+  h3 { font-size: 15px; color: var(--fg); margin: 26px 0 8px; font-weight: 600; }
+  p { margin: 10px 0; }
+  .lead { color: var(--dim); }
+
+  /* ---- 操作表 ---- */
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 500; white-space: nowrap; width: 34%; }
+  kbd {
+    display: inline-block; font-family: Consolas, monospace; font-size: 13px;
+    color: var(--key); background: #1b2634; border: 1px solid #33445a;
+    border-bottom-width: 2px; border-radius: 4px; padding: 1px 7px; white-space: nowrap;
+  }
+
+  /* ---- 手順 ---- */
+  ol.steps { padding-left: 0; list-style: none; counter-reset: s; margin: 16px 0; }
+  ol.steps > li {
+    counter-increment: s; position: relative; padding: 0 0 16px 44px; margin: 0;
+  }
+  ol.steps > li::before {
+    content: counter(s); position: absolute; left: 0; top: 2px;
+    width: 28px; height: 28px; line-height: 28px; text-align: center;
+    border-radius: 50%; background: #1b2634; border: 1px solid #33445a;
+    color: var(--accent); font-size: 14px;
+  }
+  ol.steps b { color: #fff; }
+
+  .note {
+    background: var(--bg2); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 0 4px 4px 0; padding: 12px 16px; margin: 18px 0; font-size: 14px; color: var(--dim);
+  }
+  .note b { color: var(--fg); }
+
+  ul.plain { padding-left: 20px; }
+  ul.plain li { margin: 6px 0; }
+
+  footer {
+    border-top: 1px solid var(--line); margin-top: 56px; padding: 24px 20px 48px;
+    color: var(--dim); font-size: 12px; text-align: center; line-height: 2;
+  }
+  @media (max-width: 480px) {
+    .logo { font-size: 34px; letter-spacing: 8px; }
+    th { width: 40%; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 class="logo">SORA</h1>
+  <p class="tagline">熱気球のフライトを、誰でもすぐに。</p>
+  <a class="cta" href="./prototype/">はじめる</a>
+  <div class="cta-note">インストール不要 / PC・スマホのブラウザで動きます</div>
+</header>
+
+<div class="wrap">
+
+<h2>SORA について</h2>
+<p class="lead">
+  SORA は、実在の日本の地形を 3D 化した空間で熱気球を飛ばすフライトシミュレーターです。
+  国土地理院の標高・写真タイルを読み込み、佐賀・渡良瀬・上士幌など実際の競技会場の上空を飛べます。
+</p>
+<p class="lead">
+  熱気球には舵がありません。<b>高度を変えて、行きたい方向の風に乗り換える</b> —— それがこの競技の操縦です。
+</p>
+
+<h2>はじめかた(3分)</h2>
+<ol class="steps">
+  <li><b>タスクブリーフィングを読む</b><br>
+    競技は JDG(ジャッジ・ディクレアード・ゴール)。地図上の橙色の <b>X</b> がターゲットです。
+    制限時間は30分(ゲーム内時間)、マーカーは1本。</li>
+  <li><b>パイバル(観測気球)の表を見る</b><br>
+    高度ごとの風向・風速が載っています。風向は <b>FROM(磁方位)</b> — 「その方角から吹いてくる」という意味です。
+    どの高度に乗ればターゲットへ流れるかを、ここで読みます。</li>
+  <li><b>離陸地点を選ぶ</b><br>
+    地図をクリックして決めます。基本は<b>ターゲットの風上側</b>。ずれた高度の風も使えるよう、少し余裕を取ります。</li>
+  <li><b>飛ぶ</b><br>
+    <kbd>Space</kbd> の長押しでバーナーを焚くと上昇、離すとやがて下降します。
+    <b>反応は数秒遅れて来ます</b> — 焚きすぎに注意してください。</li>
+  <li><b>マーカーを投下する</b><br>
+    ターゲットの真上に来たら <kbd>M</kbd>。マーカー着地点からターゲット中心までの距離がスコアです。</li>
+</ol>
+
+<h2>キーボード操作</h2>
+<div class="tablewrap">
+<table>
+  <tr><th><kbd>Space</kbd> 長押し</th><td>バーナー。エンベロープを温めて上昇します</td></tr>
+  <tr><th><kbd>R</kbd> 長押し</th><td>リップライン。頂部を開けて熱を抜き、下降・着陸に使います</td></tr>
+  <tr><th><kbd>M</kbd></th><td>マーカー投下(1本のみ)</td></tr>
+  <tr><th><kbd>V</kbd></th><td>視点切替(ゴンドラ / 外部)</td></tr>
+  <tr><th><kbd>P</kbd></th><td>パイバル表の表示・非表示</td></tr>
+  <tr><th><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd></th><td>時間加速 ×1 / ×2 / ×4 / ×8</td></tr>
+  <tr><th>マウスドラッグ</th><td>視点を回す</td></tr>
+  <tr><th>マウスホイール</th><td>ズーム</td></tr>
+</table>
+</div>
+
+<h3>スマホ・タブレット</h3>
+<p>画面右下にボタンが出ます。<b>🔥</b> がバーナー(長押し)、<b>RIP</b> がリップライン(長押し)、
+  <b>📍</b> がマーカー投下、<b>👁</b> が視点切替、<b>×1</b> が時間加速、<b>P</b> がパイバル表です。
+  画面のドラッグで視点が回り、ピンチでズームします。</p>
+
+<h2>計器の読みかた</h2>
+<p>画面上部の大きな数字が<b>高度(ft・MSL)</b>です。タップ/クリックで開くと、内訳が出ます。</p>
+<div class="tablewrap">
+<table>
+  <tr><th>高度(MSL)</th><td>平均海面からの高さ。パイバル表の高度と同じ基準です</td></tr>
+  <tr><th>対地高度</th><td>真下の地面からの高さ。着陸で見るのはこちら</td></tr>
+  <tr><th>昇降</th><td>上昇・下降の速さ(m/s)。バーナーの効き具合はここで見ます</td></tr>
+  <tr><th>風(現在高度)</th><td>いま乗っている風。風向は FROM(磁方位)</td></tr>
+  <tr><th>燃料</th><td>使い切ると上昇できません</td></tr>
+  <tr><th>エンベロープ温度</th><td>浮力のもと。焚くと上がり、放っておくと冷えます</td></tr>
+  <tr><th>ターゲット</th><td>ターゲットまでの距離と方位</td></tr>
+  <tr><th>残り時間</th><td>ゲーム内時間で30分</td></tr>
+</table>
+</div>
+
+<div class="note">
+  <b>コツ:</b> バーナーは「今の高度を保つため」ではなく「次の風に乗り換えるため」に焚きます。
+  温度が上がってから機体が動き出すまでに間があるので、<b>行きたい高度の手前で焚くのをやめる</b>のが基本です。
+</div>
+
+<h2>本格モードと、開発中の機能</h2>
+<p>画面左下の <b>本格モード</b> から入れます。</p>
+<ul class="plain">
+  <li><b>エリア・風・離陸地点を自分で選ぶ</b> — 日本全国、好きな場所を飛べます</li>
+  <li><b>街並み(PLATEAU)</b> — 国土交通省の3D都市モデルで実在の建物を重ねます(表示のみ。飛行の挙動は変わりません)。整備済みの地域だけに出ます</li>
+  <li><b>チェイスカー(地上クルー)</b> — 実在の道路を走る車が2台出ます。1号車は気球を追い、2号車はターゲット手前で待って地上風を報告します(<kbd>C</kbd> で無線)。開発途中版の機能です</li>
+</ul>
+<p class="lead">開発途中版は新機能を試せますが、動作は不安定です。</p>
+
+<h2>お知らせ・動画</h2>
+<ul class="plain">
+  <li>使い方の動画: <a href="https://youtube.com/shorts/CzceTExbo-c?si=IpRbXo7vmntgc5Gx" target="_blank" rel="noopener">YouTube</a> / <a href="https://www.instagram.com/supatory?utm_source=qr" target="_blank" rel="noopener">Instagram</a></li>
+  <li>本格モードの最新情報: <a href="https://www.instagram.com/hotairballoongames2026?utm_source=qr" target="_blank" rel="noopener">Instagram</a></li>
+</ul>
+
+<h2>理念</h2>
+<p class="lead">平和と幸せと安心と安全と楽しさを提供できる場でありたい。</p>
+<p class="lead">
+  SORA は実在の地形・気象データを扱いますが、<b>実機の運航判断に使えるものではありません</b>。
+  明確な基準のない項目については合否を判定せず、注意喚起にとどめています。
+</p>
+
+</div>
+
+<footer>
+  地形・写真・道路: <a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院 地理院タイル</a><br>
+  街並み: <a href="https://www.mlit.go.jp/plateau/" target="_blank" rel="noopener">3D都市モデル(Project PLATEAU)</a> / 国土交通省(CC BY 4.0)<br>
+  気象データ: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>
+</footer>
+
+</body>
+</html>
