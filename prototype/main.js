@@ -7,10 +7,37 @@ import { buildTerrain, lonLatToTile } from './terrain.js';
 import { loadBuildings, estimateGeoidOffset } from './plateau.js';
 import { loadRoads } from './road.js';
 import { createChaseCar } from './chasecar.js';
+import { createPlayerCar } from './playerCar.js';
+import { createBalloonAutopilot } from './balloonAutopilot.js';
+import { createChaseOverview } from './chaseOverview.js';
+import { createRoadMeter, chasePoints } from './chaseScore.js';
+
+// 入力イベントや地形取得中のUIからも参照するため、await より先に確定する。
+const mainParams = new URLSearchParams(location.search);
+// 通常の入口は回収ゲーム。旧操縦画面は移行確認用 mode=flight のみで保持する。
+const chaseMode = mainParams.get('mode') !== 'flight';
+const setupMode = mainParams.has('setup') || (chaseMode && mainParams.has('dev'));
+const devMode = !chaseMode && mainParams.has('dev');
+let playerCar = null, autopilot = null, chaseBounds = null;
+let chaseFinished = false, chaseLookBalloon = false;
+let chasePaused = false;
+let chaseRoadMeters = 0, chaseRoadMeter = null, chaseLaunch = null;
+let chaseCrewLoading = false;
+let chaseOverview = false, overviewController = null;
+let chasePanelSnapshot = null;
+const chasePanels = [];
+const carKeys = new Set();
+const CHASE_CATCH_RADIUS_M = 30; // 回収ゲームの仮ルール。実競技の基準ではない
+const CHASE_BEST_KEY = 'balloon-chase-proto-best';
 
 // ---- 舞台設定 ----
 const TILE_RADIUS = 2; // 5x5タイル ≒ 20km四方
 let AREA = null;       // { lon, lat, name? } エリア選択またはURLで決まる
+// 左下パネルは、地形取得などの await 中にも発火しうる DOM イベントから参照される。
+// TDZ を避けるため、モジュール初期化の最初に生成しておく。
+let cityStatusEl = null;   // 街並みの読み込み状態
+let roadStatusEl = null;   // 道路・チェイスカーの状態表示
+let radioEl = null;        // 無線パネル(C)
 
 // 日本の主な気球競技開催地(エリア選択のプリセット)
 const PRESET_AREAS = [
@@ -52,20 +79,27 @@ const WIND_PRESETS = [
     rows: [[0, 120, 6], [500, 150, 9], [1000, 180, 12], [2000, 220, 15], [3000, 250, 18], [5000, 270, 24]] },
 ];
 const toRowObj = ([ft, dir, kt]) => ({ ft, dir, kt });
+// 共有URL・編集欄の値はゲームが安定して扱える範囲に限る。
+// HTML の min/max は補助でしかないため、URL やスクリプト経由でも同じ検証を行う。
+const MAX_WIND_FT = 60_000;
+const MAX_WIND_KT = 150;
+const MIN_PRESSURE_HPA = 800;
+const MAX_PRESSURE_HPA = 1_100;
 
 // URLの ?w=ft,dir,kt;ft,dir,kt;… から風テーブルを復元(共有シード)
 function decodeWind(s) {
   if (!s) return null;
   const rows = s.split(';')
     .map((p) => p.split(',').map(Number))
-    .filter((v) => v.length === 3 && v.every(Number.isFinite) && v[0] >= 0 && v[2] >= 0)
+    .filter((v) => v.length === 3 && v.every(Number.isFinite)
+      && v[0] >= 0 && v[0] <= MAX_WIND_FT && v[2] >= 0 && v[2] <= MAX_WIND_KT)
     .map(toRowObj)
     .sort((a, b) => a.ft - b.ft);
   return rows.length ? rows : null;
 }
 const encodeWind = (rows) => rows.map((r) => `${r.ft},${r.dir},${r.kt}`).join(';');
 const shareUrl = () =>
-  `${location.origin}${location.pathname}?a=${AREA.lon.toFixed(4)},${AREA.lat.toFixed(4)}&w=${encodeWind(PIBAL)}${setupMode ? '&setup=1' : ''}${devMode ? '&dev=1' : ''}${mainParams.has('city') ? `&city=${mainParams.get('city')}` : ''}${devMode && mainParams.has('road') ? '&road=1' : ''}`;
+  `${location.origin}${location.pathname}?a=${AREA.lon.toFixed(4)},${AREA.lat.toFixed(4)}&w=${encodeWind(PIBAL)}${setupMode ? '&setup=1' : ''}${devMode ? '&dev=1' : ''}${chaseMode ? '&mode=chase' : ''}${mainParams.has('city') ? `&city=${mainParams.get('city')}` : ''}${devMode && mainParams.has('road') ? '&road=1' : ''}`;
 
 let PIBAL = decodeWind(new URLSearchParams(location.search).get('w'))
   || WIND_PRESETS[0].rows.map(toRowObj);
@@ -406,16 +440,18 @@ addEventListener('pointerdown', ensureAudio);
 function updateSounds(windKt) {
   if (!audioCtx || audioCtx.state !== 'running') return;
   const t = audioCtx.currentTime;
-  const bOn = input.burner && state.fuel > 0;
+  const muted = chaseMode && chasePaused;
+  const bOn = !muted && input.burner && state.fuel > 0;
   if (bOn !== sndBurnerOn) {
     sndBurnerOn = bOn;
     burnerGain.gain.setTargetAtTime(bOn ? 0.4 : 0, t, bOn ? 0.04 : 0.18);
   }
-  if (input.rip !== sndRipOn) {
-    sndRipOn = input.rip;
-    ripGain.gain.setTargetAtTime(input.rip ? 0.25 : 0, t, input.rip ? 0.04 : 0.12);
+  const rOn = !muted && input.rip;
+  if (rOn !== sndRipOn) {
+    sndRipOn = rOn;
+    ripGain.gain.setTargetAtTime(rOn ? 0.25 : 0, t, rOn ? 0.04 : 0.12);
   }
-  windGain.gain.setTargetAtTime(THREE.MathUtils.clamp(windKt / 40, 0, 1) * 0.15, t, 0.4);
+  windGain.gain.setTargetAtTime(muted ? 0 : THREE.MathUtils.clamp(windKt / 40, 0, 1) * 0.15, t, 0.4);
 }
 
 // ---- 入力 ----
@@ -461,6 +497,12 @@ const look = { dragging: false, lastX: 0, lastY: 0 };
 // **5つが上限**と考えている(これ以上増やすなら別操作に分ける)
 function toggleFpv() {
   if (!started) return;
+  if (chaseMode) {
+    // Vは運転用の2視点。俯瞰中なら運転へ戻ったうえで切り替える。
+    if (chaseOverview) toggleChaseOverview();
+    chaseLookBalloon = !chaseLookBalloon;
+    return;
+  }
   if (fpv) {
     fpv = false;
     if (chaseCar) { carView = true; carIndex = 0; carAim = 'balloon'; applyViewMode(); return; }
@@ -494,6 +536,7 @@ function toggleFpv() {
 // 車が増えてもこの配列に足すだけで済む
 const orbitCars = () => [chaseCar, chaseCar2].filter(Boolean);
 function cycleOrbitTarget() {
+  if (chaseMode) return;
   const cars = orbitCars();
   if (cars.length === 0) return;                 // 車がいなければ何も起きない
   const i = orbitCar ? cars.indexOf(orbitCar) : -1;
@@ -524,7 +567,39 @@ function cycleOrbitTarget() {
 }
 function togglePibal() {
   const p = document.getElementById('pibal');
+  if (chaseMode) { p.open = !p.open; return; }
   p.style.display = p.style.display === 'none' ? '' : 'none';
+}
+
+function toggleChaseOverview() {
+  if (!chaseMode || !started) return;
+  chaseOverview = !chaseOverview;
+  if (!chaseOverview) overviewController?.hide();
+  const btn = document.getElementById('chase-overview-btn');
+  btn.textContent = chaseOverview ? '運転に戻る' : '俯瞰';
+  btn.setAttribute('aria-pressed', String(chaseOverview));
+}
+
+function updateChasePanels() {
+  const anyOpen = chasePanels.some(p => p.open);
+  const btn = document.getElementById('chase-panels-btn');
+  btn.textContent = anyOpen ? 'まとめてたたむ' : chasePanelSnapshot ? '元に戻す' : 'パネルを開く';
+  btn.setAttribute('aria-expanded', String(anyOpen));
+  const readout = document.getElementById('chase-readout');
+  if (innerWidth <= 640) {
+    readout.style.top = `${document.getElementById('instruments').getBoundingClientRect().bottom + 10}px`;
+  } else readout.style.top = '';
+}
+
+function toggleChasePanels() {
+  if (chasePanels.some(p => p.open)) {
+    chasePanelSnapshot = chasePanels.map(p => p.open);
+    chasePanels.forEach(p => { p.open = false; });
+  } else {
+    chasePanels.forEach((p, i) => { p.open = chasePanelSnapshot ? chasePanelSnapshot[i] : true; });
+    chasePanelSnapshot = null;
+  }
+  updateChasePanels();
 }
 function cycleTimeScale() {
   const seq = [1, 2, 4, 8];
@@ -535,6 +610,16 @@ function cycleTimeScale() {
 }
 
 addEventListener('keydown', (e) => {
+  if (chaseMode) {
+    if (e.target.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+    if (['KeyW', 'KeyS', 'KeyA', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+      e.preventDefault();
+      if (started && !chaseFinished && !chasePaused) carKeys.add(e.code);
+      return;
+    }
+    if (['Space', 'KeyR', 'KeyM'].includes(e.code)) { e.preventDefault(); return; }
+    if (e.repeat) return;
+  }
   if (e.code === 'Space') { input.burner = true; e.preventDefault(); }
   if (e.code === 'KeyR') input.rip = true;
   // Shift+V は隠しコマンド(devMode + ?road=1 で車がいるときだけ効く)
@@ -555,8 +640,28 @@ addEventListener('keydown', (e) => {
   }
 });
 addEventListener('keyup', (e) => {
+  if (chaseMode) { carKeys.delete(e.code); return; }
   if (e.code === 'Space') input.burner = false;
   if (e.code === 'KeyR') input.rip = false;
+});
+
+function clearCarInput() {
+  carKeys.clear();
+  document.querySelectorAll('[data-car-key]').forEach(btn => btn.classList.remove('active'));
+}
+function toggleChasePause() {
+  if (!chaseMode || !started || chaseFinished) return;
+  chasePaused = !chasePaused;
+  clearCarInput();
+  const btn = document.getElementById('chase-pause-btn');
+  btn.textContent = chasePaused ? '再開（一時停止中）' : '一時停止';
+  btn.setAttribute('aria-pressed', String(chasePaused));
+  if (chasePaused) updateSounds(0);
+}
+addEventListener('blur', clearCarInput);
+document.addEventListener('visibilitychange', () => { if (document.hidden) clearCarInput(); });
+document.addEventListener('focusin', (e) => {
+  if (chaseMode && e.target.closest?.('input, textarea, select, [contenteditable="true"]')) clearCarInput();
 });
 
 // ---- タッチ操作ボタン(スマホ・タブレットなどタッチ端末向け) ----
@@ -570,9 +675,7 @@ if (isTouchDevice) {
   document.getElementById('credit').open = true;
   // キー説明は**既定モードでは開いたまま**にする(初めての人が最初に読むもの)。
   // devMode では左下にチェイスカーの状態表示も出て混み合うので、たたんで始める。
-  // **devMode 定数はこの時点ではまだ初期化されていない**(const の TDZ)ので、
-  // ここでは URL を直接読む。参照すると画面が真っ暗になる
-  document.getElementById('help-keys').open = !new URLSearchParams(location.search).has('dev');
+  document.getElementById('help-keys').open = !devMode;
 }
 // キー説明をたたむと #help の高さが変わる。その上に載せているチェイスカーの状態表示・無線を置き直す
 document.getElementById('help-keys').addEventListener('toggle', stackBottomLeft);
@@ -586,17 +689,51 @@ function setupTouchControls() {
     btn.addEventListener('pointerleave', up);
   }
   holdButton(document.getElementById('tc-burner'),
-    () => { input.burner = true; }, () => { input.burner = false; });
+    () => { if (!chaseMode) input.burner = true; }, () => { if (!chaseMode) input.burner = false; });
   holdButton(document.getElementById('tc-rip'),
-    () => { input.rip = true; }, () => { input.rip = false; });
+    () => { if (!chaseMode) input.rip = true; }, () => { if (!chaseMode) input.rip = false; });
   document.getElementById('tc-marker').addEventListener('click', () => {
-    if (flightReady) dropMarker();
+    if (flightReady && !chaseMode) dropMarker();
   });
   document.getElementById('tc-view').addEventListener('click', toggleFpv);
   document.getElementById('tc-tscale').addEventListener('click', cycleTimeScale);
   document.getElementById('tc-pibal').addEventListener('click', togglePibal);
+  document.querySelectorAll('[data-car-key]').forEach(btn => {
+    const key = `touch-${btn.dataset.carKey}`;
+    holdButton(btn, () => {
+      if (chaseMode && started && !chaseFinished && !chasePaused) carKeys.add(key);
+    }, () => carKeys.delete(key));
+  });
 }
 setupTouchControls();
+if (chaseMode) {
+  document.body.classList.add('chase-mode');
+  document.title = 'GameTarget - マーカー回収レース';
+  document.querySelector('#briefing .b-hint').textContent = '気球は自動操縦します。地図で気球の離陸地点を選ぶと、黄色い車はその近くから出発します。風の表は編集でき、条件URLで共有できます。';
+  document.querySelector('#briefing .mapnote').textContent = '北が上 / クリック: 気球の離陸地点を選択（車は近くから出発） / ホイール: 拡大縮小 / ドラッグ: 移動';
+  document.getElementById('result-retry').textContent = 'もう一度走る';
+  // 既定モードのパイバル表示はそのまま。回収モードだけdetailsへ置き換える。
+  const oldPibal = document.getElementById('pibal');
+  const pibal = document.createElement('details');
+  pibal.id = 'pibal'; pibal.className = 'panel';
+  const summary = document.createElement('summary');
+  summary.textContent = 'パイバル観測データ';
+  oldPibal.querySelector('b').remove();
+  pibal.appendChild(summary);
+  while (oldPibal.firstChild) pibal.appendChild(oldPibal.firstChild);
+  oldPibal.replaceWith(pibal);
+  for (const id of ['instruments', 'chase-readout', 'pibal', 'help-keys', 'credit']) {
+    const panel = document.getElementById(id);
+    panel.open = false;
+    chasePanels.push(panel);
+    panel.addEventListener('toggle', updateChasePanels);
+  }
+  document.getElementById('chase-overview-btn').addEventListener('click', toggleChaseOverview);
+  document.getElementById('chase-pause-btn').addEventListener('click', toggleChasePause);
+  document.getElementById('chase-panels-btn').addEventListener('click', toggleChasePanels);
+  addEventListener('resize', updateChasePanels);
+  updateChasePanels();
+}
 
 // ゴンドラ視点でのルック操作(ドラッグで視線方向を回転。目の位置は動かさない)
 // pointerイベントなのでマウスでもタッチでも同じコードで動く
@@ -624,6 +761,14 @@ renderer.domElement.addEventListener('pointerup', () => { look.dragging = false;
 renderer.domElement.addEventListener('pointercancel', () => { look.dragging = false; });
 
 function applyViewMode() {
+  if (chaseMode) {
+    controls.enabled = false;
+    fpv = false;
+    carView = false;
+    camera.fov = 60;
+    camera.updateProjectionMatrix();
+    return;
+  }
   if (fpv) {
     // 現在の視線方向を引き継いでゴンドラ視点に入る(切り替え時の違和感を減らす)
     const dir = new THREE.Vector3().subVectors(controls.target, camera.position).normalize();
@@ -788,10 +933,12 @@ function setupLinkOverlay(linkId, overlayId, closeBtnId) {
 setupLinkOverlay('howto-link', 'howto-overlay', 'howto-close');
 setupLinkOverlay('setup-link', 'setup-overlay', 'setup-close');
 
-// 「お試しでやってみる」: SORAに残っているフルJDGブリーフィング機能(?setup=1)を試せる
-// (hot-air-balloon1の最新版ではないが、機能自体はSORA内にそのまま残っている)
+// 回収ゲームのエリア・風・出発地点を選び直す。風・街並みの条件は引き継ぐ。
 document.getElementById('setup-try').addEventListener('click', () => {
   const p = new URLSearchParams(location.search);
+  p.delete('a');
+  p.delete('dev');
+  p.set('mode', 'chase');
   p.set('setup', '1');
   location.href = `${location.pathname}?${p.toString()}`;
 });
@@ -1056,9 +1203,6 @@ function setupAreaMap(cv, onSelect) {
 // 既定では競技のルール説明(エリア選択・ブリーフィング画面)を省き、即フライト画面から始める。
 // 実際のJDG競技のようにエリア/風/離陸地点を自分で選びたい場合は URL に ?setup=1 を付ける。
 // ?dev=1 は GameTarget で検討中の新機能を試す実験用モード(安定版とはコードを分離している)。
-const mainParams = new URLSearchParams(location.search);
-const setupMode = mainParams.has('setup');
-const devMode = mainParams.has('dev');
 const hasChosenArea = mainParams.has('a'); // 住所検索や共有URLなどで明示的にエリアが指定されているか
 AREA = decodeArea(mainParams.get('a'));
 if (!AREA) AREA = (setupMode || devMode) ? await selectArea() : PRESET_AREAS[0];
@@ -1069,7 +1213,7 @@ if (!AREA) AREA = (setupMode || devMode) ? await selectArea() : PRESET_AREAS[0];
 //   ?dev=1&road=1(チェイスカー) … 地上クルーの追尾を通して見るための画面で、
 //     途中で別の場所へ飛ぶと道路グラフを読み直すことになる
 // 既定モード / ?a= / 素の ?dev=1 では今までどおり出す
-if (setupMode || (devMode && mainParams.has('road'))) {
+if (chaseMode || setupMode || (devMode && mainParams.has('road'))) {
   document.getElementById('area-search').style.display = 'none';
 }
 
@@ -1095,13 +1239,8 @@ if (devMode) setupDevWindEditor();
 // **表示のみ**。当たり判定にも風にも高度計算にも一切関与しないので、飛行挙動は既定と同じ。
 // 地形の読み込みが終わってから非同期で始めるため、離陸を待たせることもない。
 //
-// 左下に積む状態表示の入れ物は、**街並みの読み込みを始める前に宣言しておくこと。**
-// `loadCityBuildings()` は最初の await までを同期で走るので、その中の
-// `stackBottomLeft()` が `roadStatusEl` を読む。後ろで let 宣言していると
-// TDZ の ReferenceError でモジュールごと死ぬ(= 画面が真っ暗)
-let cityStatusEl = null;   // 街並みの読み込み状態(8秒後に DOM から取り除く)
-let roadStatusEl = null;   // 道路・チェイスカーの状態表示(隠しコマンド Shift+C)
-let radioEl = null;        // 無線パネル(C)。第3段階の報告
+// 左下パネルの入れ物はファイル先頭で初期化済み。非同期読み込みとDOMイベントが
+// 先に走っても `stackBottomLeft()` が TDZ を踏まないようにしている。
 if (mainParams.has('city')) loadCityBuildings();
 
 async function loadCityBuildings() {
@@ -1214,7 +1353,7 @@ function stackBottomLeft() {
   }
 }
 let lastCarReadout = 0;
-if (devMode && mainParams.has('road')) loadRoadNetwork();
+if (chaseMode || (devMode && mainParams.has('road'))) loadRoadNetwork();
 
 async function loadRoadNetwork() {
   // 2台ぶんで4〜5行になり画面を塞ぐので、**たためるようにする**(#instruments・#credit と同じ作法)。
@@ -1298,7 +1437,7 @@ async function loadRoadNetwork() {
     roadPending = pendingAround;
     roadStats = stats;   // 走行中に増えるので、状態表示から見るために持っておく
 
-    if (stats.edges === 0) {
+    if (stats.edges === 0 && !chaseMode) {
       roadTextEl.textContent = 'この範囲には道路データがありませんでした(飛行には影響しません)';
       roadBriefOverride = 'この範囲には道路データがありません';
       return;
@@ -1327,6 +1466,7 @@ async function loadRoadNetwork() {
         maxZ: tm.minZ + tm.n * terrain.tileMeters,
       },
     };
+    if (chaseMode) chaseRoadMeter = createRoadMeter(graph);
     // **車は離陸してから置く。**離陸前の state.pos は世界原点(=ターゲット)なので、
     // ここで置くと2台ともターゲットの真横に湧く(2026-08-28に画面で発覚)。
     // devMode はブリーフィングを挟むぶん、道路の読み込みのほうが先に終わる。
@@ -1349,14 +1489,23 @@ async function loadRoadNetwork() {
  * 道路の読み込みのほうが先に終わり、実際にそうなっていた(2026-08-28に画面で発覚)。
  * 呼び出し口は2つ: 離陸済みなら loadRoadNetwork の末尾、そうでなければ startFlight。
  */
-function spawnChaseCars() {
+async function spawnChaseCars() {
   if (!roadReady || chaseCar) return;
+  if (chaseMode && (!started || chaseFinished || chaseCrewLoading)) return;
   const { graph, bounds } = roadReady;
   // ここで失敗しても道路の表示は残したいので、例外は個別に拾う
   try {
+    if (chaseMode) {
+      chaseCrewLoading = true;
+      await roadStream(chaseLaunch.x, chaseLaunch.z);
+      if (chaseFinished) return;
+      // 初期のターゲット側だけが読めた状態で、離陸地点から離れた道へ車を置かない。
+      if (![...graph.nodes.values()].some(n => Math.hypot(n.x - chaseLaunch.x, n.z - chaseLaunch.z) < 2500)) return;
+    }
+    const launch = chaseMode ? chaseLaunch : state.pos;
     chaseCar = createChaseCar({
       graph, getHeight: terrain.getHeight,
-      startX: state.pos.x, startZ: state.pos.z, // 離陸地点のいちばん近くの道から出発する
+      startX: launch.x, startZ: launch.z, // 離陸地点のいちばん近くの道から出発する
       kind: 'van', bodyColor: 0xf0f0f0,         // 1号車はハイエース型・白(2号車は自家用車型・濃い青)
       bounds,
     });
@@ -1370,7 +1519,7 @@ function spawnChaseCars() {
     const c1 = chaseCar.info();
     chaseCar2 = createChaseCar({
       graph, getHeight: terrain.getHeight,
-      startX: state.pos.x, startZ: state.pos.z,
+      startX: launch.x, startZ: launch.z,
       kind: 'car', bodyColor: 0x2f5f9e,      // 2号車は自家用車型・濃い青(形で見分ける)
       // ターゲットの手前で待機する。100m は**目安**で、規則上の距離ではない
       // (立入制限の範囲は競技ごとに違い、一律の基準は無い)。
@@ -1382,6 +1531,10 @@ function spawnChaseCars() {
       spawnAwayFrom: { x: c1.x, z: c1.z, minM: 20 },
     });
     if (chaseCar2) scene.add(chaseCar2.group);
+    if (chaseMode) {
+      if (chaseCar2) chaseCar2.group.userData.mark.material.color.setHex(0x5ad0ff);
+      return; // 回収モードの視点・操作説明は専用UIを維持する
+    }
 
     // V の循環にチェイスカー視点が加わったことを操作説明にも出す
     const hint = document.getElementById('help-view');
@@ -1398,6 +1551,8 @@ function spawnChaseCars() {
     chaseCar = null;
     chaseCar2 = null;
     roadSummary += ` / チェイスカーの生成に失敗: ${err && err.message ? err.message : err}`;
+  } finally {
+    chaseCrewLoading = false;
   }
 }
 
@@ -1591,9 +1746,9 @@ function setupWindEditor() {
 
 function renderEditorRows(rows) {
   document.getElementById('wind-editor').innerHTML = rows.map((r) =>
-    `<tr><td><input type="number" class="w-ft" step="100" min="0" value="${r.ft}"></td>` +
+    `<tr><td><input type="number" class="w-ft" step="100" min="0" max="${MAX_WIND_FT}" value="${r.ft}"></td>` +
     `<td><input type="number" class="w-dir" step="10" min="0" max="360" value="${r.dir}"></td>` +
-    `<td><input type="number" class="w-kt" step="1" min="0" value="${r.kt}"></td>` +
+    `<td><input type="number" class="w-kt" step="1" min="0" max="${MAX_WIND_KT}" value="${r.kt}"></td>` +
     `<td><button type="button" class="del" title="行を削除">×</button></td></tr>`).join('');
 }
 
@@ -1605,7 +1760,7 @@ function readEditorRows() {
       kt: Number(tr.querySelector('.w-kt').value),
     }))
     .filter((r) => Number.isFinite(r.ft) && Number.isFinite(r.dir) && Number.isFinite(r.kt)
-      && r.ft >= 0 && r.kt >= 0)
+      && r.ft >= 0 && r.ft <= MAX_WIND_FT && r.kt >= 0 && r.kt <= MAX_WIND_KT)
     .sort((a, b) => a.ft - b.ft);
 }
 
@@ -2111,9 +2266,9 @@ document.getElementById('wx-apply-blh').addEventListener('click', () => {
 
 function renderDevEditorRows(rows) {
   document.getElementById('wind-editor-dev').innerHTML = rows.map((r) =>
-    `<tr><td><input type="number" class="w-ft" step="100" min="0" value="${r.ft}"></td>` +
+    `<tr><td><input type="number" class="w-ft" step="100" min="0" max="${MAX_WIND_FT}" value="${r.ft}"></td>` +
     `<td><input type="number" class="w-dir" step="10" min="0" max="360" value="${r.dir}"></td>` +
-    `<td><input type="number" class="w-kt" step="1" min="0" value="${r.kt}"></td>` +
+    `<td><input type="number" class="w-kt" step="1" min="0" max="${MAX_WIND_KT}" value="${r.kt}"></td>` +
     `<td><button type="button" class="del" title="行を削除">×</button></td></tr>`).join('');
 }
 
@@ -2125,7 +2280,7 @@ function readDevEditorRows() {
       kt: Number(tr.querySelector('.w-kt').value),
     }))
     .filter((r) => Number.isFinite(r.ft) && Number.isFinite(r.dir) && Number.isFinite(r.kt)
-      && r.ft >= 0 && r.kt >= 0)
+      && r.ft >= 0 && r.ft <= MAX_WIND_FT && r.kt >= 0 && r.kt <= MAX_WIND_KT)
     .sort((a, b) => a.ft - b.ft);
 }
 
@@ -2169,10 +2324,10 @@ if (setupMode || hasChosenArea) {
   const launchMapApi = setupLaunchMap();
   document.getElementById('briefing').style.display = '';
   if (setupMode) {
-    document.getElementById('briefing-title').textContent = 'タスクブリーフィング';
+    document.getElementById('briefing-title').textContent = chaseMode ? '回収レースの準備' : 'タスクブリーフィング';
   } else {
     document.getElementById('briefing').classList.add('quick-launch');
-    document.getElementById('briefing-title').textContent = '地図で離陸地点を選択してください';
+    document.getElementById('briefing-title').textContent = chaseMode ? '出発地点を選んで回収レースへ' : '地図で離陸地点を選択してください';
     const dp = defaultLaunchPoint();
     launchMapApi.selectAt(dp.x, dp.z);
   }
@@ -2350,7 +2505,7 @@ function setupLaunchMap() {
     const btn = document.getElementById('launch-btn');
     btn.disabled = false;
     const d = Math.hypot(launchSel.x - TARGET_XZ.x, launchSel.z - TARGET_XZ.z);
-    btn.textContent = `離陸!(ターゲットまで ${(d / 1000).toFixed(2)} km)`;
+    btn.textContent = `${chaseMode ? '回収レースを開始' : '離陸!'}(ターゲットまで ${(d / 1000).toFixed(2)} km)`;
   }
 
   render();
@@ -2631,7 +2786,7 @@ function renderPressureTable() {
       <td style="color:${p.type === 'h' ? '#ff8a8a' : '#8ab8ff'}">${p.type === 'h' ? '高(H)' : '低(L)'}</td>
       <td>${p.lat.toFixed(2)}N</td>
       <td>${p.lon.toFixed(2)}E</td>
-      <td><input type="number" class="p-hpa" step="1" value="${p.hpa}"></td>
+      <td><input type="number" class="p-hpa" step="1" min="${MIN_PRESSURE_HPA}" max="${MAX_PRESSURE_HPA}" value="${p.hpa}"></td>
       <td><button type="button" class="del" title="削除">×</button></td>
     </tr>`).join('');
   updateWindCalc();
@@ -2653,7 +2808,13 @@ document.getElementById('pressure-clear').addEventListener('click', () => {
 document.getElementById('pressure-editor-dev').addEventListener('input', (e) => {
   if (!e.target.classList.contains('p-hpa')) return;
   const i = Number(e.target.closest('tr').dataset.i);
-  devPressure.points[i].hpa = Number(e.target.value);
+  const hpa = Number(e.target.value);
+  if (!Number.isFinite(hpa) || hpa < MIN_PRESSURE_HPA || hpa > MAX_PRESSURE_HPA) {
+    e.target.setCustomValidity(`${MIN_PRESSURE_HPA}〜${MAX_PRESSURE_HPA} hPaで入力してください`);
+    return;
+  }
+  e.target.setCustomValidity('');
+  devPressure.points[i].hpa = hpa;
   updateWindCalc();
   updateDiurnalJudgment();
 });
@@ -2759,12 +2920,18 @@ function localXZToLonLat(x, z) {
 }
 
 function windCalcReadParams() {
+  // type=number の制約はプログラムから設定された値やブラウザ差異までは防げない。
+  // モデルへ渡す直前にも有限値・上限を保証し、Infinity/NaN が座標計算へ伝播しないようにする。
+  const bounded = (id, min, max, fallback) => {
+    const v = Number(document.getElementById(id).value);
+    return Number.isFinite(v) ? THREE.MathUtils.clamp(v, min, max) : fallback;
+  };
   return {
-    K: Number(document.getElementById('wc-K').value) || 0,
-    L: Math.max(1, Number(document.getElementById('wc-L').value) || 1),
-    damping: (Number(document.getElementById('wc-damp').value) || 0) / 100,
-    angle: Number(document.getElementById('wc-angle').value) || 0,
-    layerFt: Number(document.getElementById('wc-layer').value) || 1000,
+    K: bounded('wc-K', 0, 100, 0),
+    L: bounded('wc-L', 1, 2000, 1),
+    damping: bounded('wc-damp', 0, 100, 0) / 100,
+    angle: bounded('wc-angle', -180, 180, 0),
+    layerFt: bounded('wc-layer', 100, 10_000, 1000),
   };
 }
 
@@ -3133,6 +3300,7 @@ function defaultLaunchPoint() {
 }
 
 function startFlight(x, z) {
+  if (chaseMode && started) return;
   // 離陸地点とターゲット周辺は先に高解像度化しておく
   terrain.requestDetail(x, z);
   terrain.requestDetail(TARGET_XZ.x, TARGET_XZ.z);
@@ -3148,6 +3316,32 @@ function startFlight(x, z) {
   document.getElementById('dev-briefing').style.display = 'none';
   flightReady = true;
   started = true;
+  if (chaseMode) {
+    const tm = terrain.map;
+    chaseLaunch = { x, z };
+    chaseRoadMeters = 0;
+    chaseBounds = {
+      minX: tm.minX, minZ: tm.minZ,
+      maxX: tm.minX + tm.n * terrain.tileMeters,
+      maxZ: tm.minZ + tm.n * terrain.tileMeters,
+    };
+    // 近距離開始では投下まで短いので、車だけ一律212m離して回収不能にしない。
+    const offset = Math.min(150, Math.max(30, Math.hypot(x - TARGET_XZ.x, z - TARGET_XZ.z) * 0.15));
+    playerCar = createPlayerCar({
+      getHeight: terrain.getHeight, startX: x + offset, startZ: z + offset, bounds: chaseBounds,
+      headingDeg: Math.atan2(-150, 150) * 180 / Math.PI,
+    });
+    scene.add(playerCar.group);
+    overviewController ||= createChaseOverview({ camera, scene, getHeight: terrain.getHeight });
+    document.getElementById('chase-overview-btn').disabled = false;
+    document.getElementById('chase-pause-btn').disabled = false;
+    autopilot = createBalloonAutopilot({
+      windAt, getHeight: terrain.getHeight, targetX: TARGET_XZ.x, targetZ: TARGET_XZ.z,
+    });
+    clearCarInput();
+    terrain.requestDetail(playerCar.info().x, playerCar.info().z);
+    applyViewMode();
+  }
   // チェイスカーは**離陸地点が決まってから**置く。道路の読み込みがまだ終わって
   // いなければ、終わった時点で loadRoadNetwork 側から置かれる
   spawnChaseCars();
@@ -3201,6 +3395,12 @@ function stepMarker(dt) {
 }
 
 function onMarkerLanded(pos) {
+  if (chaseMode) {
+    const c = playerCar.info();
+    const dist = Math.hypot(pos.x - c.x, pos.z - c.z);
+    finishChase(dist, dist <= CHASE_CATCH_RADIUS_M ? '回収成功!' : '回収できませんでした');
+    return;
+  }
   const dist = Math.hypot(pos.x - TARGET_XZ.x, pos.z - TARGET_XZ.z);
   // 着地点→ターゲットの計測ライン
   const lineGeo = new THREE.BufferGeometry().setFromPoints([
@@ -3225,6 +3425,100 @@ function showResult(dist, note) {
   document.getElementById('marker-info').textContent = `${dist.toFixed(1)} m`;
 }
 
+// JDGとは別の終了処理。未投下・範囲外には距離の記録を付けない。
+function finishChase(dist, note) {
+  if (chaseFinished) return;
+  chaseFinished = true;
+  document.getElementById('chase-pause-btn').disabled = true;
+  expired = true;
+  input.burner = false;
+  input.rip = false;
+  clearCarInput();
+  document.querySelector('#result .r-title').textContent = 'マーカー回収 リザルト';
+  document.querySelector('#result .r-dist').hidden = dist === null;
+  const lines = [note];
+  const points = chasePoints(dist !== null && dist <= CHASE_CATCH_RADIUS_M, chaseRoadMeters);
+  lines.push(`回収 ${points.recovery}点 + 道路走行 ${points.road}点 = 合計 ${points.total}点`);
+  lines.push(`道路走行 ${(chaseRoadMeters / 1000).toFixed(2)} km（100mにつき1点・端数切捨て）`);
+  if (dist !== null) {
+    document.getElementById('result-dist').textContent = dist.toFixed(1);
+    lines.push(`着地時の車との距離 / ${CHASE_CATCH_RADIUS_M}m以内で成功（ゲーム内ルール）`);
+    try {
+      const saved = localStorage.getItem(CHASE_BEST_KEY);
+      const prev = saved === null ? Infinity : Number(saved);
+      if (!Number.isFinite(prev) || dist < prev) {
+        localStorage.setItem(CHASE_BEST_KEY, dist.toFixed(1));
+        lines.push('回収モードの自己ベスト更新!');
+      } else lines.push(`回収モードの自己ベスト: ${prev.toFixed(1)} m`);
+    } catch { /* 保存できない環境でも結果は表示する */ }
+  }
+  document.getElementById('result-sub').textContent = lines.join('\n');
+  document.getElementById('result').style.display = '';
+  document.getElementById('marker-info').textContent = note;
+}
+
+function stepChaseFlight(dt) {
+  let w = windAt(state.pos.y, state.pos.x, state.pos.z);
+  // ×8でも車と落下物を同じ刻みで進め、着地判定が1フレーム前の車位置を使わない。
+  const steps = Math.max(1, Math.ceil(dt / (1 / 60)));
+  const tick = dt / steps;
+  const held = (...keys) => keys.some(key => carKeys.has(key)) ? 1 : 0;
+  const drive = {
+    throttle: held('KeyW', 'ArrowUp', 'touch-forward') - held('KeyS', 'ArrowDown', 'touch-back'),
+    steer: held('KeyD', 'ArrowRight', 'touch-right') - held('KeyA', 'ArrowLeft', 'touch-left'),
+  };
+  const outside = pos => pos.x < chaseBounds.minX || pos.x > chaseBounds.maxX
+    || pos.z < chaseBounds.minZ || pos.z > chaseBounds.maxZ;
+  for (let i = 0; i < steps && !chaseFinished; i++) {
+    const ctrl = autopilot.control(state.pos, state.vy, tick);
+    input.burner = ctrl.burner;
+    input.rip = ctrl.rip;
+    w = stepPhysics(tick);
+    const beforeDrive = playerCar.info();
+    playerCar.update(tick, drive);
+    if (chaseCar) chaseCar.update(tick, state.pos.x, state.pos.z);
+    if (chaseCar2) chaseCar2.update(tick);
+    if (!expired && chaseRoadMeter) {
+      const afterDrive = playerCar.info();
+      // 制限時間をまたぐ最後の刻みも、残り時間までの走行だけ加点する。
+      const fraction = Math.min(1, Math.max(0, remaining / tick));
+      chaseRoadMeters += chaseRoadMeter.measure(beforeDrive, {
+        x: beforeDrive.x + (afterDrive.x - beforeDrive.x) * fraction,
+        z: beforeDrive.z + (afterDrive.z - beforeDrive.z) * fraction,
+      });
+    }
+    // 離陸直後に落下が終わらないよう、対地10m以上で投下を受け付ける。
+    if (!expired && !state.grounded && marker.available > 0
+      && state.pos.y - terrain.getHeight(state.pos.x, state.pos.z) >= 10
+      && autopilot.shouldDrop(state.pos)) {
+      dropMarker();
+      if (marker.state) autopilot.markDropped();
+    }
+    if (!marker.state && outside(state.pos)) {
+      finishChase(null, '気球がプレイ範囲の外へ出たため終了しました');
+      break;
+    }
+    if (marker.state) {
+      // 次の落下ステップの水平位置を確かめ、DEM範囲外を海面として採点しない。
+      const m = marker.state, mw = windAt(m.pos.y, m.pos.x, m.pos.z);
+      const next = {
+        x: m.pos.x + (m.vel.x + (mw.vx - m.vel.x) / MARKER_WIND_TAU * tick) * tick,
+        z: m.pos.z + (m.vel.z + (mw.vz - m.vel.z) / MARKER_WIND_TAU * tick) * tick,
+      };
+      if (outside(next)) {
+        finishChase(null, 'マーカーがプレイ範囲の外へ出たため終了しました');
+        break;
+      }
+    }
+    stepMarker(tick);
+    stepClock(tick);
+    if (!marker.state && state.grounded && state.fuel <= 0) {
+      finishChase(null, '気球が燃料切れで接地したため終了しました');
+    }
+  }
+  return w;
+}
+
 // 制限時間の進行。時間内に投下できなければ現在地点で計測(フォールバック)
 function stepClock(dt) {
   if (expired) return;
@@ -3234,6 +3528,10 @@ function stepClock(dt) {
   hud.clock.textContent = `${mm}:${ss}`;
   if (remaining <= 0) {
     expired = true;
+    if (chaseMode) {
+      if (!marker.state) finishChase(null, '時間切れ: 気球が投下範囲に到達しませんでした');
+      return; // 投下済みなら着地まで回収を続ける
+    }
     if (!marker.state) {
       marker.available = 0;
       const d = Math.hypot(state.pos.x - TARGET_XZ.x, state.pos.z - TARGET_XZ.z);
@@ -3326,18 +3624,33 @@ function drawCompass() {
     ctx.restore();
   }
   // ターゲット方向(オレンジの印)
-  const brgT = Math.atan2(TARGET_XZ.x - state.pos.x, -(TARGET_XZ.z - state.pos.z));
+  const compassOrigin = chaseMode && playerCar ? playerCar.info() : state.pos;
+  const brgT = Math.atan2(TARGET_XZ.x - compassOrigin.x, -(TARGET_XZ.z - compassOrigin.z));
   ctx.fillStyle = '#ff5a00';
   ctx.beginPath();
   ctx.arc(Math.sin(brgT) * (R - 5), -Math.cos(brgT) * (R - 5), 5, 0, Math.PI * 2);
   ctx.fill();
 
-  // チェイスカーの方向(水色の印)。devMode + ?road=1 のときだけ。
+  if (chaseMode && playerCar) {
+    // 車から見た気球(水色)と投下済みマーカー(桃色)の方位。
+    const points = [[state.pos, '#5ad0ff'], ...(marker.state ? [[marker.state.pos, '#ff80ab']] : [])];
+    for (const [pos, color] of points) {
+      const brg = Math.atan2(pos.x - compassOrigin.x, -(pos.z - compassOrigin.z));
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(Math.sin(brg) * (R - 13), -Math.cos(brg) * (R - 13), 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // 仲間の方向。回収モードは黄色い車、通常モードは気球を基準にする。
   // 2km も離れると車は画面上で点にもならないので、実機と同じく「見えなくても方位は分かる」
-  if (chaseCar) {
-    const c = chaseCar.info();
-    const brgC = Math.atan2(c.x - state.pos.x, -(c.z - state.pos.z));
-    ctx.fillStyle = '#5ad0ff';
+  for (const [crew, color] of [[chaseCar, chaseMode ? '#ffffff' : '#5ad0ff'],
+    ...(chaseMode ? [[chaseCar2, '#5a9cff']] : [])]) {
+    if (!crew) continue;
+    const c = crew.info();
+    const brgC = Math.atan2(c.x - compassOrigin.x, -(c.z - compassOrigin.z));
+    ctx.fillStyle = color;
     ctx.beginPath();
     ctx.rect(Math.sin(brgC) * (R - 5) - 4, -Math.cos(brgC) * (R - 5) - 4, 8, 8);
     ctx.fill();
@@ -3357,6 +3670,41 @@ function drawCompass() {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(`${String(Math.round(heading)).padStart(3, '0')}°`, C, C);
+}
+
+function updateChaseCamera(dt) {
+  const c = playerCar.info();
+  if (chaseOverview) {
+    let top = 0, bottom = 0, right = 0;
+    // 開閉後のパネルと常設ボタンを避ける余白。極端に小さい画面でも描画域は残す。
+    for (const id of ['instruments', 'chase-readout', 'pibal']) {
+      const el = document.getElementById(id);
+      if (el.getClientRects().length) top = Math.max(top, el.getBoundingClientRect().bottom + 12);
+    }
+    for (const id of ['help', 'credit', 'compass', 'touch-controls', 'chase-actions']) {
+      const el = document.getElementById(id);
+      if (el.getClientRects().length) {
+        const rect = el.getBoundingClientRect();
+        if (innerHeight < 500 && rect.left > innerWidth * 0.6) right = Math.max(right, innerWidth - rect.left + 12);
+        else bottom = Math.max(bottom, innerHeight - rect.top + 12);
+      }
+    }
+    const points = [
+      { id: 'balloon', pos: new THREE.Vector3(state.pos.x, state.pos.y + 18, state.pos.z), radius: 20 },
+      { id: 'car', pos: new THREE.Vector3(c.x, c.y + 1, c.z), radius: 3 },
+    ];
+    if (marker.state) points.push({ id: 'marker', pos: marker.state.pos, radius: 2 });
+    overviewController.update(points, dt, {
+      left: 0, right: Math.min(right, innerWidth * 0.4), top: Math.min(top, innerHeight * 0.45), bottom: Math.min(bottom, innerHeight * 0.35),
+    });
+  } else {
+    const head = c.headingDeg * Math.PI / 180;
+    const x = c.x - Math.sin(head) * 14, z = c.z + Math.cos(head) * 14;
+    camera.position.set(x, Math.max(c.y + 6, terrain.getHeight(x, z) + 3), z);
+    if (chaseLookBalloon) camera.lookAt(state.pos.x, state.pos.y + 12, state.pos.z);
+    else camera.lookAt(c.x, c.y + 1, c.z);
+  }
+  document.getElementById('chase-view').textContent = chaseOverview ? '俯瞰' : chaseLookBalloon ? '気球を見る' : '進行方向';
 }
 
 // ---- HUD ----
@@ -3384,6 +3732,21 @@ function updateHud(w) {
   hud.fuelFill.style.width = `${state.fuel}%`;
   hud.heatFill.style.width = `${state.heat * 100}%`;
   hud.status.textContent = state.grounded ? '接地' : '飛行中';
+  if (chaseMode && playerCar) {
+    const c = playerCar.info();
+    const dist = Math.hypot(state.pos.x - c.x, state.pos.z - c.z);
+    document.getElementById('chase-speed').textContent = c.speedKmh;
+    document.getElementById('chase-distance').textContent = `${Math.round(dist)} m`;
+    const points = chasePoints(false, chaseRoadMeters);
+    document.getElementById('chase-road-score').textContent = `${points.road}点 / ${(chaseRoadMeters / 1000).toFixed(2)} km`;
+    document.getElementById('chase-team').textContent = roadBriefOverride || (!roadReady ? '仲間・道路データを読み込み中'
+      : !chaseCar ? '仲間の出発道路を確認中（道路がない場所では配置できません）'
+      : `白：気球を追尾 / 青：${!chaseCar2 ? '配置できる道路なし' : chaseCar2.info().arrived ? '到着・待機' : chaseCar2.info().halted ? '待機・経路確認中' : 'ターゲットへ先行'}`);
+    document.getElementById('chase-view').textContent = chaseOverview ? '俯瞰' : chaseLookBalloon ? '気球を見る' : '進行方向';
+    document.getElementById('chase-phase').textContent = chaseFinished ? '終了'
+      : marker.state ? 'マーカー落下中 — 着地に合わせて待ち受ける'
+      : expired ? '時間切れ' : '気球は自動操縦・自動投下';
+  }
 
   const dxE = TARGET_XZ.x - state.pos.x;        // 東成分
   const dN = -(TARGET_XZ.z - state.pos.z);      // 北成分
@@ -3412,7 +3775,7 @@ if (!setupMode && !hasChosenArea && !devMode) {
   const lp = defaultLaunchPoint();
   startFlight(lp.x, lp.z);
 }
-if (new URLSearchParams(location.search).has('fpv')) {
+if (!chaseMode && new URLSearchParams(location.search).has('fpv')) {
   fpv = true;
   applyViewMode();
 }
@@ -3420,17 +3783,19 @@ if (new URLSearchParams(location.search).has('fpv')) {
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05) * timeScale;
 
-  if (started) {
-    const w = stepPhysics(dt);
-    stepMarker(dt);
-    stepClock(dt);
+  if (started && !chaseFinished && !(chaseMode && chasePaused)) {
+    const w = chaseMode ? stepChaseFlight(dt) : stepPhysics(dt);
+    if (!chaseMode) {
+      stepMarker(dt);
+      stepClock(dt);
+    }
     updateSounds(w.kt);
 
     // チェイスカー(devMode + ?road=1 のときだけ存在する)。気球を道なりに追う。
     // 表示上の存在で、風にも高度計算にも当たり判定にも関与しない
-    if (chaseCar) chaseCar.update(dt, state.pos.x, state.pos.z);
+    if (!chaseMode && chaseCar) chaseCar.update(dt, state.pos.x, state.pos.z);
     // 2号車は気球を追わない(目的地はターゲット固定)。到着後は自分で何もしなくなる
-    if (chaseCar2) chaseCar2.update(dt);
+    if (!chaseMode && chaseCar2) chaseCar2.update(dt);
 
     // 道路タイルを足していく。3秒に1回だけ、しかも非同期なのでフレームを止めない
     // (ensureAround は多重呼び出しを自分で弾く)。
@@ -3439,10 +3804,17 @@ renderer.setAnimationLoop(() => {
     // データの端で止まったのと同じ)。2号車が到着したら気球だけに戻す
     if (roadStream && performance.now() - lastRoadStream > 3000) {
       lastRoadStream = performance.now();
-      const c2 = chaseCar2 && chaseCar2.info();
-      const useCar2 = c2 && !c2.arrived && (roadStreamTurn++ & 1) === 1;
-      if (useCar2) roadStream(c2.x, c2.z);
-      else roadStream(state.pos.x, state.pos.z);
+      if (chaseMode) {
+        const centers = [playerCar.info(), state.pos, ...(chaseCar ? [chaseCar.info()] : [chaseLaunch]),
+          ...(chaseCar2 && !chaseCar2.info().arrived ? [chaseCar2.info()] : [])];
+        const center = centers[roadStreamTurn++ % centers.length];
+        roadStream(center.x, center.z).then(() => { if (!chaseCar) spawnChaseCars(); });
+      } else {
+        const c2 = chaseCar2 && chaseCar2.info();
+        const useCar2 = c2 && !c2.arrived && (roadStreamTurn++ & 1) === 1;
+        if (useCar2) roadStream(c2.x, c2.z);
+        else roadStream(state.pos.x, state.pos.z);
+      }
     }
     if (roadStatusEl && performance.now() - lastCarReadout > 500) {
       lastCarReadout = performance.now();
@@ -3462,7 +3834,9 @@ renderer.setAnimationLoop(() => {
     ripPull += (pullTarget - ripPull) * Math.min(1, dt * 6);
     balloon.rope.position.y = balloon.ropeBaseY - 0.18 * ripPull;
 
-    if (fpv) {
+    if (chaseMode && playerCar) {
+      // 回収用カメラは終了後も下で更新する(結果を俯瞰で確認できる)。
+    } else if (fpv) {
       // ゴンドラ視点: 目の位置は気球に固定し、視線方向だけドラッグで回す。
       // 立ち位置は中心から少し横(実機のパイロット位置。真上の炎が正しく見える)
       camera.position.set(state.pos.x - 0.45, state.pos.y + EYE_HEIGHT, state.pos.z);
@@ -3521,12 +3895,17 @@ renderer.setAnimationLoop(() => {
     // 低高度では直下の1タイルだけさらにz17(≒1m/px)へ
     if (performance.now() - lastDetailCheck > 1500) {
       lastDetailCheck = performance.now();
-      terrain.updateDetail(state.pos.x, state.pos.z);
+      const detailPos = chaseMode ? playerCar.info() : state.pos;
+      terrain.updateDetail(detailPos.x, detailPos.z);
       const agl = state.pos.y - terrain.getHeight(state.pos.x, state.pos.z);
-      if (agl < 1000) terrain.requestUltra(state.pos.x, state.pos.z);
+      if (chaseMode || agl < 1000) terrain.requestUltra(detailPos.x, detailPos.z);
     }
   }
 
-  if (!fpv && !carView) controls.update();
+  if (chaseMode && playerCar) {
+    updateChaseCamera(dt / timeScale);
+    drawCompass();
+  }
+  if (!chaseMode && !fpv && !carView) controls.update();
   renderer.render(scene, camera);
 });

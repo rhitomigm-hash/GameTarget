@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SORA - 熱気球フライトシミュレーター</title>
+<title>GameTarget - マーカー回収レース</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
   #app { position: fixed; inset: 0; touch-action: none; }
@@ -174,15 +174,60 @@
   .tc-btn.tc-fire.active { background: rgba(255, 112, 67, 0.7); }
   #tc-rip.active { background: rgba(255, 255, 255, 0.3); }
   .tc-btn.active { background: rgba(255, 255, 255, 0.25); }
+  .chase-only { display: none; }
+  .chase-mode .chase-only { display: block; }
+  .chase-mode .flight-only { display: none; }
+  .chase-mode .tc-row.chase-only { display: flex; }
+  #chase-readout { top: 12px; left: 50%; transform: translateX(-50%); max-width: 300px; line-height: 1.6; }
+  #chase-readout summary { cursor: pointer; color: #ffca5b; }
+  #chase-readout .chase-note { font-size: 11px; color: #c4d3df; }
+  .chase-mode #result { z-index: 7; max-width: calc(100vw - 80px); }
+  .chase-mode #result-sub { white-space: pre-line; line-height: 1.6; }
+  .chase-mode #pibal summary { cursor: pointer; font-weight: bold; }
+  .chase-mode #credit { bottom: 62px; }
+  .chase-mode #instruments, .chase-mode #pibal, #chase-readout {
+    max-height: 40vh; overflow: auto;
+  }
+  #chase-actions {
+    position: fixed; right: 12px; bottom: 12px; z-index: 6;
+    gap: 8px; flex-wrap: wrap; justify-content: flex-end; max-width: calc(100vw - 24px); font-family: "Segoe UI", "Yu Gothic UI", sans-serif;
+  }
+  .chase-mode #chase-actions { display: flex; }
+  #chase-actions button {
+    min-height: 40px; padding: 7px 12px; border-radius: 8px; border: 1px solid #58758d;
+    background: rgba(10,20,30,.88); color: #e8f0f6; cursor: pointer; font: inherit; font-size: 13px;
+  }
+  #chase-actions button[aria-pressed="true"] { border-color: #ffca5b; color: #ffca5b; }
+  #chase-actions button:disabled { opacity: .5; cursor: default; }
+  #chase-overview-labels { position: fixed; inset: 0; pointer-events: none; }
+  .chase-map-label {
+    position: absolute; transform: translate(-50%, -100%); padding: 4px 7px;
+    border-radius: 5px; border-bottom: 3px solid currentColor; background: rgba(10,20,30,.88);
+    font: bold 12px "Yu Gothic UI", sans-serif; white-space: nowrap;
+  }
+  .chase-map-label::after {
+    content: ''; position: absolute; left: calc(50% - 3px); bottom: -8px;
+    width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+  }
+  .chase-map-balloon { color: #70d9ff; }
+  .chase-map-car { color: #ffca5b; }
+  .chase-map-marker { color: #ff9cbe; }
 
   /* hover:none かつ pointer:coarse = タッチ操作の端末とみなす */
   @media (hover: none) and (pointer: coarse) {
     #touch-controls { display: flex; }
     .kbd-only { display: none; }
+    #chase-actions { right: 10px; bottom: 220px; }
+    .chase-mode #credit { bottom: 270px; }
   }
 
   /* 幅の狭い画面向けのレイアウト調整(スマホ・小さいウィンドウ共通) */
   @media (max-width: 640px) {
+    #chase-readout { top: 64px; left: 12px; right: 12px; transform: none; max-width: none; }
+    .chase-mode #credit { bottom: 270px; }
+    #chase-actions { right: 10px; bottom: 220px; }
+    #chase-actions button { min-height: 38px; font-size: 12px; }
+    .chase-mode #pibal { max-width: 45vw; }
     .panel { font-size: 11px; padding: 7px 10px; }
     #instruments { min-width: 128px; }
     #instruments .alt-big { font-size: 22px; }
@@ -197,6 +242,7 @@
     .tc-btn.tc-small { width: 38px; height: 38px; font-size: 12px; }
     .tc-btn.tc-big { width: 64px; height: 64px; font-size: 17px; }
   }
+  #howto-overlay .howto-panel a, #setup-overlay .howto-panel a { color: #9ecfff; }
   #loading {
     position: fixed; inset: 0; display: flex; flex-direction: column;
     align-items: center; justify-content: center; gap: 12px;
@@ -335,6 +381,7 @@
 
 <details id="instruments" class="panel">
   <summary class="alt-big"><span id="alt-ft">----</span> ft</summary>
+  <div class="chase-only">気球の計器（自動操縦）</div>
   <div class="row"><span>高度(MSL)</span><span class="num"><span id="alt-m">--</span> m</span></div>
   <div class="row"><span>対地高度</span><span class="num"><span id="agl">--</span> m</span></div>
   <div class="row"><span>昇降</span><span class="num"><span id="vario">--</span> m/s</span></div>
@@ -348,6 +395,16 @@
   <div class="row"><span>ターゲット</span><span class="num" id="target-info">---- m / ---°</span></div>
   <div class="row"><span>マーカー</span><span class="num" id="marker-info">残り 1</span></div>
   <div class="row"><span>残り時間</span><span class="num" id="clock">30:00</span></div>
+</details>
+
+<details id="chase-readout" class="panel chase-only" open>
+  <summary>マーカー回収レース · <span id="chase-speed">0</span> km/h</summary>
+  <div id="chase-phase">気球は自動操縦・自動投下</div>
+  <div>道路走行 <span id="chase-road-score">0点 / 0.00 km</span></div>
+  <div id="chase-team">仲間・道路データを読み込み中</div>
+  <div class="chase-note">回収成功 1,000点 ＋ 道路100mにつき1点。<br>青＝先行・待機 / 白＝気球追尾（同じチーム）。<br>道路加点は読み込み済みの道路が対象。幅はゲーム用の近似で、交通ルールの判定ではありません。</div>
+  <div>気球まで <span id="chase-distance">-- m</span> · 視点: <span id="chase-view">進行方向</span></div>
+  <div class="chase-note">着地の瞬間に車が30m以内なら回収成功。<br>黄色は自由走行（道路・水域・建物の通行制約なし）。<br>コンパス: 水色＝気球 / 桃色＝マーカー / 橙＝ターゲット / 白・青の四角＝仲間</div>
 </details>
 
 <!-- devMode専用の隠しデバッグ表示。Wキーで表示/非表示。気圧配置モデルの計算過程を
@@ -369,13 +426,21 @@
     <div class="b-title" id="briefing-title">タスクブリーフィング</div>
     <div class="b-cols">
       <div class="b-left">
-        <table class="tasksheet">
+        <table class="tasksheet flight-only">
           <tr><th>競技</th><td>JDG(ジャッジ・ディクレアード・ゴール)</td></tr>
           <tr><th>ターゲット</th><td>地図上の橙色X</td></tr>
           <tr><th>離陸</th><td>個別離陸(地図をクリックして選択)</td></tr>
           <tr><th>制限時間</th><td>30:00(ゲーム内時間)</td></tr>
           <tr><th>マーカー</th><td>1本(Mキーで投下)</td></tr>
           <tr><th>スコア</th><td>マーカー着地点〜ターゲット中心の距離</td></tr>
+        </table>
+        <table class="tasksheet chase-only">
+          <tr><th>役割</th><td>黄色い車を運転してマーカーを回収</td></tr>
+          <tr><th>気球</th><td>自動操縦・自動投下</td></tr>
+          <tr><th>仲間</th><td>青は先行・待機、白は気球を追尾</td></tr>
+          <tr><th>制限時間</th><td>30分（時間内の投下なら着地まで継続）</td></tr>
+          <tr><th>回収</th><td>着地の瞬間に黄色い車が30m以内</td></tr>
+          <tr><th>得点</th><td>回収1,000点＋道路100mにつき1点（仮設定）</td></tr>
         </table>
         <div class="b-sub">パイバル観測データ(編集できます)</div>
         <div class="wind-tools">
@@ -482,11 +547,11 @@
       <div class="b-windcalc">
         <div class="b-sub">風の計算(実験) — 気圧配置から地上風を計算し、離陸時にフライトへ反映します</div>
         <div class="windcalc-params">
-          <label>K(勾配→風速kt) <input type="number" id="wc-K" step="0.5" value="8"></label>
-          <label>L(減衰距離km) <input type="number" id="wc-L" step="10" value="500"></label>
-          <label>減速係数(%) <input type="number" id="wc-damp" step="1" value="65"></label>
-          <label>角度補正(°) <input type="number" id="wc-angle" step="1" value="20"></label>
-          <label>地上層厚み(ft) <input type="number" id="wc-layer" step="100" value="1000"></label>
+          <label>K(勾配→風速kt) <input type="number" id="wc-K" step="0.5" min="0" max="100" value="8"></label>
+          <label>L(減衰距離km) <input type="number" id="wc-L" step="10" min="1" max="2000" value="500"></label>
+          <label>減速係数(%) <input type="number" id="wc-damp" step="1" min="0" max="100" value="65"></label>
+          <label>角度補正(°) <input type="number" id="wc-angle" step="1" min="-180" max="180" value="20"></label>
+          <label>地上層厚み(ft) <input type="number" id="wc-layer" step="100" min="100" max="10000" value="1000"></label>
         </div>
         <pre class="windcalc-result" id="windcalc-result">H・Lを2点以上置くと、計算結果がここに表示されます。</pre>
       </div>
@@ -634,13 +699,23 @@
 <div id="help" class="panel">
   <details id="help-keys" class="kbd-only">
     <summary>操作説明</summary>
+    <div class="flight-only">
     <b>Space</b> バーナー(長押し) <b>R</b> リップライン(長押し) <b>M</b> マーカー投下<br>
     <b>V</b> 視点切替<span id="help-view">(ゴンドラ/外部)</span> <b>1-4</b> 時間加速 ×1/×2/×4/×8<br>
     <span id="help-radio" hidden><b>C</b> 無線(地上クルーへの問い合わせ)<br></span>
     <b>P</b> パイバル表 表示/非表示 マウスドラッグ: 視点回転 / ホイール: ズーム
+    </div>
+    <div class="chase-only">
+      <b>W/S</b> または <b>↑/↓</b> 前進・後退（逆入力でブレーキ）<br>
+      <b>A/D</b> または <b>←/→</b> ハンドル<br>
+      <b>V</b> 進行方向 / 気球を見る <b>P</b> パイバル表<br>
+      「俯瞰」ボタン: 全体を見る / 運転に戻る<br>
+      「一時停止」ボタン: 気球・車・マーカー・時間を停止 / 再開<br>
+      <b>1-4</b> 時間加速 ×1/×2/×4/×8
+    </div>
   </details>
-  <a id="setup-link" href="#">本格モード</a>
-  / <a id="howto-link" href="#">使い方</a>
+  <a id="setup-link" href="#">レース設定</a> / <a id="howto-link" href="#">遊び方</a><br>
+  <a href="../">GameTargetホーム</a> / <a data-sora-link href="https://rhitomigm-hash.github.io/SORA/prototype/">気球を操縦する（SORA）</a>
 </div>
 
 <div id="touch-controls">
@@ -648,54 +723,59 @@
     <button id="tc-pibal" class="tc-btn tc-small" type="button" aria-label="パイバル表示切替">P</button>
     <button id="tc-tscale" class="tc-btn tc-small" type="button" aria-label="時間加速切替">×1</button>
     <button id="tc-view" class="tc-btn tc-small" type="button" aria-label="視点切替">👁</button>
-    <button id="tc-marker" class="tc-btn tc-small" type="button" aria-label="マーカー投下">📍</button>
+    <button id="tc-marker" class="tc-btn tc-small flight-only" type="button" aria-label="マーカー投下">📍</button>
   </div>
-  <div class="tc-row tc-main">
+  <div class="tc-row tc-main flight-only">
     <button id="tc-rip" class="tc-btn tc-big" type="button" aria-label="リップライン(長押し)">RIP</button>
     <button id="tc-burner" class="tc-btn tc-big tc-fire" type="button" aria-label="バーナー(長押し)">🔥</button>
   </div>
+  <div class="tc-row chase-only">
+    <button class="tc-btn tc-small" data-car-key="left" type="button" aria-label="左にハンドル">←</button>
+    <button class="tc-btn tc-big" data-car-key="forward" type="button" aria-label="前進（長押し）">前進</button>
+    <button class="tc-btn tc-small" data-car-key="right" type="button" aria-label="右にハンドル">→</button>
+  </div>
+  <div class="tc-row chase-only">
+    <button class="tc-btn tc-big" data-car-key="back" type="button" aria-label="後退・ブレーキ（長押し）">後退</button>
+  </div>
+</div>
+
+<div id="chase-actions" class="chase-only" aria-label="回収モードの操作">
+  <button id="chase-pause-btn" type="button" aria-pressed="false" disabled>一時停止</button>
+  <button id="chase-overview-btn" type="button" aria-pressed="false" disabled>俯瞰</button>
+  <button id="chase-panels-btn" type="button" aria-expanded="false">パネルを開く</button>
 </div>
 
 <div id="howto-overlay" style="display:none">
   <div class="b-panel howto-panel">
-    <div class="b-title">SORAの使い方</div>
-    <div class="howto-label">動画</div>
-    <div class="howto-links">
-      <a href="https://www.instagram.com/supatory?utm_source=qr" target="_blank" rel="noopener">Instagram</a>
-      <a href="https://youtube.com/shorts/CzceTExbo-c?si=IpRbXo7vmntgc5Gx" target="_blank" rel="noopener">YouTube</a>
-    </div>
+    <div class="b-title">マーカー回収レースの遊び方</div>
+    <p>あなたは黄色い車の運転手です。気球は自動操縦・自動投下。風と気球の動きを読み、マーカーの着地点へ先回りしましょう。</p>
+    <p><b>W/S・↑/↓</b>で前後、<b>A/D・←/→</b>でハンドル。進行方向と逆の入力でブレーキ。スマホは画面の矢印を長押しします。</p>
+    <p><b>V</b>で進行方向／気球を見る、<b>P</b>で風の表。「俯瞰」で全体を確認でき、「一時停止」で落ち着いて考えられます。</p>
+    <p><b>着地の瞬間に黄色い車がマーカーの30m以内</b>なら回収成功。着地後に拾いに行く方式ではありません。</p>
+    <p>回収成功1,000点＋道路走行100mにつき1点。青は目標付近へ先行・待機、白は気球を追尾する同じチームの仲間です。</p>
+    <div class="howto-note">黄色い車は自由走行です。道路加点は読み込み済み道路でのゲーム用判定です。距離・配点は試作の設定で、交通ルールや実競技の基準ではありません。</div>
+    <p><a href="../#controls">操作早見表を読む</a> / <a data-sora-link href="https://rhitomigm-hash.github.io/SORA/prototype/">気球を操縦する（SORA）</a></p>
     <button id="howto-close" type="button" class="howto-close-btn">閉じる</button>
   </div>
 </div>
 
 <div id="setup-overlay" style="display:none">
   <div class="b-panel howto-panel">
-    <div class="b-title">本格モード</div>
-    <div class="howto-label">動画</div>
-    <div class="howto-links">
-      <a href="https://www.instagram.com/hotairballoongames2026?utm_source=qr" target="_blank" rel="noopener">Instagram</a>
-    </div>
-    <div class="howto-note">hot-air-balloon1(エリア・風・離陸地点を自分で選ぶ本格JDGモード)の
-    最新版が遊べる環境は、Instagramでお知らせします。</div>
-    <button id="setup-try" type="button" class="howto-try-btn">お試しでやってみる(最新版ではありません)</button>
-    <button id="setup-dev" type="button" class="howto-dev-btn">開発途中版(新機能を試す・不安定です)</button>
-    <div class="howto-label">街並み(PLATEAU)</div>
-    <div class="howto-note">実在の建物を重ねて表示します(表示のみ。飛行の挙動は変わりません)。
-    国土交通省が整備した地域だけに出ます。佐賀市・一関・上士幌は未整備のため表示されません。</div>
-    <button id="setup-city1" type="button" class="howto-dev-btn">街並み: 箱のみ(軽い)</button>
-    <button id="setup-city2" type="button" class="howto-dev-btn">街並み: 写真つき(重い)</button>
+    <div class="b-title">レース設定</div>
+    <div class="howto-note">エリア・風・気球の離陸地点を選びます。黄色い車はその近くから出発します。変更すると新しいレースになります。</div>
+    <button id="setup-try" type="button" class="howto-try-btn">エリア・風・出発地点を選ぶ</button>
+    <div class="howto-label" style="margin-top:20px">街並み（任意・開発途中）</div>
+    <div class="howto-note">PLATEAUの整備済み地域で建物を表示します。表示のみで、車の通行制限には使いません。地域によって表示できない場合があります。切り替えるとレースを読み込み直します。</div>
+    <button id="setup-city1" type="button" class="howto-dev-btn">街並み: 箱のみ（軽い）</button>
+    <button id="setup-city2" type="button" class="howto-dev-btn">街並み: 写真つき（重い）</button>
     <button id="setup-city0" type="button" class="howto-dev-btn" hidden>街並みを消す</button>
-    <div class="howto-label">チェイスカー(地上クルー)</div>
-    <div class="howto-note">実在の道路を走る車が2台出ます(表示のみ。飛行の挙動は変わりません)。
-    1号車は気球を追い、2号車はターゲット手前で待って地上風を報告します(<b>C</b>で無線)。
-    開発途中版の機能なので、押すと開発途中版に切り替わります。</div>
-    <button id="setup-road1" type="button" class="howto-dev-btn">チェイスカーを出す</button>
-    <button id="setup-road0" type="button" class="howto-dev-btn" hidden>チェイスカーを消す</button>
+    <div class="howto-note">道路と青・白の仲間は回収ゲームに含まれます。</div>
+    <p><a data-sora-link href="https://rhitomigm-hash.github.io/SORA/prototype/">気球の操縦・競技はSORAへ</a></p>
+    <!-- 未移行の操縦用処理は保存。通常の入口には表示しない。 -->
+    <div hidden><button id="setup-dev" type="button">旧開発画面</button><button id="setup-road1" type="button">旧クルー表示</button><button id="setup-road0" type="button" hidden>旧クルー非表示</button></div>
     <button id="setup-close" type="button" class="howto-close-btn">閉じる</button>
   </div>
 </div>
-
-
 
 <details id="credit" class="panel">
   <summary>出典</summary>
@@ -708,8 +788,8 @@
 </details>
 
 <div id="loading" style="display:none">
-  <div class="logo">SORA</div>
-  <div class="tagline">熱気球のフライトを、誰でもすぐに。</div>
+  <div class="logo">GameTarget</div>
+  <div class="tagline">風を読んで、マーカーの着地点へ。</div>
   <div class="t" id="load-title">地形を読み込み中…</div>
   <div class="p" id="load-progress">0 / 0</div>
 </div>
@@ -722,6 +802,7 @@
   }
 }
 </script>
+<script src="../sora-link.js" defer></script>
 <script type="module" src="./main.js"></script>
 </body>
 </html>

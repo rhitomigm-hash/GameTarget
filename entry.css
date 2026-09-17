@@ -1,0 +1,23 @@
+.masthead { flex-wrap: wrap; }
+.masthead .brand { font-size: clamp(1.7rem, 3vw, 2.4rem); }
+.masthead .brand span { max-width: none; }
+.hero h1 { font-size: clamp(2.3rem, 4.5vw, 4.1rem); }
+.race-scene { border: 3px solid var(--ink); border-radius: 24px; background: #d9f2fc; box-shadow: 8px 8px 0 #b5d6e7; transform: rotate(1deg); overflow: hidden; }
+.race-scene svg { display: block; width: 100%; height: auto; }
+.race-scene p { text-align: right; padding: 0 20px 12px; font-size: .75rem; color: #435866; }
+.sora-route { margin-top: 22px; font-size: .95rem; }
+.race-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; }
+.race-steps article { border-top: 3px solid var(--ink); padding-top: 18px; }
+.race-steps h3 { margin: 10px 0 14px; }
+.step-number { font: 900 2.5rem/1 Arial, sans-serif; color: var(--blue); }
+.next-flight { border-top: var(--line); }
+.next-flight h2 { margin-bottom: 22px; }
+@media (max-width: 680px) {
+  .race-steps { grid-template-columns: 1fr; }
+  .hero { padding-inline: 22px; }
+  .hero h1 { font-size: clamp(2rem, 8vw, 3rem); }
+  .hero h1 br:nth-child(2) { display: initial; }
+  .race-scene { margin-right: 8px; }
+  .masthead nav { width: 100%; }
+  .hero .actions { align-items: flex-start; flex-direction: column; }
+}

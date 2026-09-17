@@ -8,6 +8,8 @@ const PHOTO_Z = 14;
 const TILE_PX = 256;
 const SEG = 128;                    // 1タイルあたりのメッシュ分割数
 const EARTH_CIRC = 40075016.686;    // 赤道周長(m)
+// タイル配信が応答を返さないとき、起動処理が Promise.all のまま止まり続けないようにする。
+const TILE_FETCH_TIMEOUT_MS = 20_000;
 
 export function lonLatToTile(lon, lat, z) {
   const n = 2 ** z;
@@ -17,9 +19,15 @@ export function lonLatToTile(lon, lat, z) {
 }
 
 async function fetchBitmap(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`tile fetch failed: ${res.status} ${url}`);
-  return createImageBitmap(await res.blob());
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TILE_FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) throw new Error(`tile fetch failed: ${res.status} ${url}`);
+    return createImageBitmap(await res.blob());
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function decodeDem(bitmap) {
@@ -191,8 +199,8 @@ export async function buildTerrain(centerLon, centerLat, radius, onProgress) {
     if (old) old.dispose();
   }
 
-  function startUpgrade(entry, force) {
-    if (!entry || entry.level || (!force && hiCount >= HIRES_MAX)) return;
+  function startUpgrade(entry) {
+    if (!entry || entry.level || hiCount >= HIRES_MAX) return;
     entry.level = 1;
     hiCount++;
     upgradingCount++;
@@ -232,7 +240,14 @@ export async function buildTerrain(centerLon, centerLat, radius, onProgress) {
       (t) => Math.abs(x - t.cx) <= h && Math.abs(t.cz - z) <= h);
     if (!entry) { dbg.ultraState = 'no-entry'; return; }
     if (entry === ultraEntry) { dbg.ultraState = 'already'; return; }
-    if (!entry.hiApplied) { dbg.ultraState = 'wait-z16'; startUpgrade(entry, true); return; } // 先にz16を確保
+    // z17 は z16 を基底テクスチャとして保持する。ここで上限を無視して z16 を作ると、
+    // 低空飛行で通過したタイルの数だけ 2048px テクスチャが積み上がる。
+    // 予算を使い切った場合は既存の z16 範囲だけで z17 化し、メモリ上限を守る。
+    if (!entry.hiApplied) {
+      dbg.ultraState = hiCount >= HIRES_MAX ? 'wait-z16-budget' : 'wait-z16';
+      startUpgrade(entry);
+      return;
+    }
     dbg.ultraState = 'building';
     ultraLoading = true;
     try {

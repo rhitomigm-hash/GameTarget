@@ -1,208 +1,74 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ja">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SORA — 熱気球フライトシミュレーター / 操作方法</title>
-<meta name="description" content="SORA は実在の日本の地形を3D化した空間で熱気球を飛ばすフライトシミュレーターです。操作方法とはじめかた。">
-<style>
-  :root {
-    --bg: #0b1016;
-    --bg2: #121a24;
-    --line: #22303f;
-    --fg: #dfe7ee;
-    --dim: #93a3b3;
-    --accent: #9ecfff;
-    --key: #ffd54f;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--fg);
-    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, system-ui, sans-serif;
-    line-height: 1.8;
-    -webkit-text-size-adjust: 100%;
-  }
-  a { color: var(--accent); }
-  .wrap { max-width: 760px; margin: 0 auto; padding: 0 20px 80px; }
-
-  /* ---- ヘッダー ---- */
-  header {
-    text-align: center;
-    padding: 64px 20px 48px;
-    border-bottom: 1px solid var(--line);
-    background: radial-gradient(120% 90% at 50% 0%, #17253a 0%, var(--bg) 70%);
-  }
-  .logo { font-size: 44px; letter-spacing: 14px; color: var(--accent); margin: 0 0 6px; font-weight: 400; }
-  .tagline { color: var(--dim); margin: 0 0 28px; font-size: 15px; }
-  .cta {
-    display: inline-block; padding: 14px 34px; border-radius: 6px;
-    background: #2a6fb0; color: #fff; text-decoration: none; font-size: 17px;
-    border: 1px solid #3d8ad4;
-  }
-  .cta:hover { background: #337fc6; }
-  .cta-note { color: var(--dim); font-size: 12px; margin-top: 12px; }
-
-  /* ---- 本文 ---- */
-  h2 {
-    font-size: 19px; color: var(--accent); font-weight: 500;
-    margin: 48px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--line);
-    letter-spacing: 1px;
-  }
-  h3 { font-size: 15px; color: var(--fg); margin: 26px 0 8px; font-weight: 600; }
-  p { margin: 10px 0; }
-  .lead { color: var(--dim); }
-
-  /* ---- 操作表 ---- */
-  .tablewrap { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; }
-  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { color: var(--dim); font-weight: 500; white-space: nowrap; width: 34%; }
-  kbd {
-    display: inline-block; font-family: Consolas, monospace; font-size: 13px;
-    color: var(--key); background: #1b2634; border: 1px solid #33445a;
-    border-bottom-width: 2px; border-radius: 4px; padding: 1px 7px; white-space: nowrap;
-  }
-
-  /* ---- 手順 ---- */
-  ol.steps { padding-left: 0; list-style: none; counter-reset: s; margin: 16px 0; }
-  ol.steps > li {
-    counter-increment: s; position: relative; padding: 0 0 16px 44px; margin: 0;
-  }
-  ol.steps > li::before {
-    content: counter(s); position: absolute; left: 0; top: 2px;
-    width: 28px; height: 28px; line-height: 28px; text-align: center;
-    border-radius: 50%; background: #1b2634; border: 1px solid #33445a;
-    color: var(--accent); font-size: 14px;
-  }
-  ol.steps b { color: #fff; }
-
-  .note {
-    background: var(--bg2); border: 1px solid var(--line); border-left: 3px solid var(--accent);
-    border-radius: 0 4px 4px 0; padding: 12px 16px; margin: 18px 0; font-size: 14px; color: var(--dim);
-  }
-  .note b { color: var(--fg); }
-
-  ul.plain { padding-left: 20px; }
-  ul.plain li { margin: 6px 0; }
-
-  footer {
-    border-top: 1px solid var(--line); margin-top: 56px; padding: 24px 20px 48px;
-    color: var(--dim); font-size: 12px; text-align: center; line-height: 2;
-  }
-  @media (max-width: 480px) {
-    .logo { font-size: 34px; letter-spacing: 8px; }
-    th { width: 40%; }
-  }
-</style>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GameTarget｜チェイスカー・マーカー回収レース</title>
+<meta name="description" content="黄色い車を運転し、気球が落とすマーカーの着地点へ。青と白の仲間と、風を読むマーカー回収ゲーム。">
+<meta name="theme-color" content="#087bbd">
+<link rel="stylesheet" href="./guide.css"><link rel="stylesheet" href="./entry.css">
+<script src="./sora-link.js" defer></script>
 </head>
 <body>
-
-<header>
-  <h1 class="logo">SORA</h1>
-  <p class="tagline">熱気球のフライトを、誰でもすぐに。</p>
-  <a class="cta" href="./prototype/">はじめる</a>
-  <div class="cta-note">インストール不要 / PC・スマホのブラウザで動きます</div>
-</header>
-
-<div class="wrap">
-
-<h2>SORA について</h2>
-<p class="lead">
-  SORA は、実在の日本の地形を 3D 化した空間で熱気球を飛ばすフライトシミュレーターです。
-  国土地理院の標高・写真タイルを読み込み、佐賀・渡良瀬・上士幌など実際の競技会場の上空を飛べます。
-</p>
-<p class="lead">
-  熱気球には舵がありません。<b>高度を変えて、行きたい方向の風に乗り換える</b> —— それがこの競技の操縦です。
-</p>
-
-<h2>はじめかた(3分)</h2>
-<ol class="steps">
-  <li><b>タスクブリーフィングを読む</b><br>
-    競技は JDG(ジャッジ・ディクレアード・ゴール)。地図上の橙色の <b>X</b> がターゲットです。
-    制限時間は30分(ゲーム内時間)、マーカーは1本。</li>
-  <li><b>パイバル(観測気球)の表を見る</b><br>
-    高度ごとの風向・風速が載っています。風向は <b>FROM(磁方位)</b> — 「その方角から吹いてくる」という意味です。
-    どの高度に乗ればターゲットへ流れるかを、ここで読みます。</li>
-  <li><b>離陸地点を選ぶ</b><br>
-    地図をクリックして決めます。基本は<b>ターゲットの風上側</b>。ずれた高度の風も使えるよう、少し余裕を取ります。</li>
-  <li><b>飛ぶ</b><br>
-    <kbd>Space</kbd> の長押しでバーナーを焚くと上昇、離すとやがて下降します。
-    <b>反応は数秒遅れて来ます</b> — 焚きすぎに注意してください。</li>
-  <li><b>マーカーを投下する</b><br>
-    ターゲットの真上に来たら <kbd>M</kbd>。マーカー着地点からターゲット中心までの距離がスコアです。</li>
-</ol>
-
-<h2>キーボード操作</h2>
-<div class="tablewrap">
-<table>
-  <tr><th><kbd>Space</kbd> 長押し</th><td>バーナー。エンベロープを温めて上昇します</td></tr>
-  <tr><th><kbd>R</kbd> 長押し</th><td>リップライン。頂部を開けて熱を抜き、下降・着陸に使います</td></tr>
-  <tr><th><kbd>M</kbd></th><td>マーカー投下(1本のみ)</td></tr>
-  <tr><th><kbd>V</kbd></th><td>視点切替(ゴンドラ / 外部)</td></tr>
-  <tr><th><kbd>P</kbd></th><td>パイバル表の表示・非表示</td></tr>
-  <tr><th><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd></th><td>時間加速 ×1 / ×2 / ×4 / ×8</td></tr>
-  <tr><th>マウスドラッグ</th><td>視点を回す</td></tr>
-  <tr><th>マウスホイール</th><td>ズーム</td></tr>
-</table>
+<a class="skip" href="#play">遊び方へスキップ</a>
+<header class="masthead"><a class="brand" href="./">GameTarget<span>チェイスカー・マーカー回収レース</span></a>
+<nav aria-label="メインナビゲーション"><a href="#play">遊び方</a><a href="#controls">操作</a><a class="button small" href="./prototype/">回収レースで遊ぶ ↗</a></nav></header>
+<main>
+<section class="hero" aria-labelledby="hero-title">
+<div><p class="eyebrow">地上から、気球チームの一員に。</p>
+<h1 id="hero-title">風を読んで、<br>落ちる先へ。<br><em>走るのは、きみ。</em></h1>
+<p class="intro">あなたは黄色いチェイスカーの運転手。<br>空を行く気球を追い、マーカーの着地点へ先回り。<br>青と白の仲間と、回収成功を目指そう。</p>
+<div class="actions"><a class="button" href="./prototype/">回収レースを始める ↗</a><a href="./prototype/?setup=1">エリア・風を選ぶ</a></div>
+<p class="meta">インストール不要 · PC / スマホ対応 · 気球は自動操縦</p>
+<p class="sora-route"><a data-sora-link="home" href="https://rhitomigm-hash.github.io/SORA/">気球を操縦したい方は SORA へ ↗</a></p></div>
+<div class="race-scene" role="img" aria-label="黄色い操作車、白い追尾車、青い先行車と気球の役割を示すイメージ図">
+<svg viewBox="0 0 600 520" aria-hidden="true">
+<rect width="600" height="520" rx="22" fill="#d9f2fc"/>
+<path d="M0 300Q110 240 230 300T600 280V520H0Z" fill="#b6d49b"/>
+<path d="M-30 430Q100 355 230 400T650 345" stroke="#435866" stroke-width="68" fill="none"/>
+<path d="M-30 430Q100 355 230 400T650 345" stroke="#fff4ba" stroke-width="3" stroke-dasharray="18 16" fill="none"/>
+<path d="M160 245Q310 180 420 245" fill="none" stroke="#087bbd" stroke-width="3" stroke-dasharray="8 9"/>
+<path d="M410 231l18 16-25 1" fill="none" stroke="#087bbd" stroke-width="3"/>
+<ellipse cx="205" cy="128" rx="65" ry="82" fill="#e9664b" stroke="#183a4b" stroke-width="3"/>
+<ellipse cx="205" cy="128" rx="30" ry="82" fill="#f4b951"/>
+<path d="M166 194l23 31h32l22-31" fill="none" stroke="#183a4b" stroke-width="3"/>
+<rect x="187" y="223" width="36" height="24" rx="3" fill="#b37b43" stroke="#183a4b" stroke-width="3"/>
+<path d="M395 210l20 58" stroke="#e9664b" stroke-width="4"/><circle cx="417" cy="278" r="6" fill="#e9664b"/>
+<g stroke="#183a4b" stroke-width="3">
+<g transform="translate(90 358)"><rect width="85" height="36" rx="10" fill="#fafafa"/><path d="M12 0l10-22h38l12 22" fill="#fafafa"/><circle cx="17" cy="38" r="10" fill="#183a4b"/><circle cx="68" cy="38" r="10" fill="#183a4b"/></g>
+<g transform="translate(280 379)"><rect width="88" height="37" rx="10" fill="#ffdc55"/><path d="M12 0l10-22h39l14 22" fill="#ffdc55"/><circle cx="17" cy="39" r="10" fill="#183a4b"/><circle cx="71" cy="39" r="10" fill="#183a4b"/></g>
+<g transform="translate(470 329)"><rect width="85" height="36" rx="10" fill="#3996dc"/><path d="M12 0l10-22h38l12 22" fill="#3996dc"/><circle cx="17" cy="38" r="10" fill="#183a4b"/><circle cx="68" cy="38" r="10" fill="#183a4b"/></g></g>
+<g fill="#183a4b" font-family="sans-serif" font-size="20" font-weight="700" text-anchor="middle">
+<text x="205" y="30">気球は自動操縦</text><text x="130" y="327">白：気球を追尾</text>
+<text x="325" y="463">黄色：あなたが運転</text><text x="490" y="290">青：先行・待機</text></g>
+</svg><p>役割のイメージ図</p></div>
+</section>
+<nav class="chapter-strip" aria-label="遊び方の流れ"><span>回収までの3ステップ</span><a href="#drive">01 車を運転</a><a href="#read">02 風を読む</a><a href="#catch">03 着地に合わせる</a></nav>
+<section id="play" class="section">
+<div class="section-heading"><p class="eyebrow">HOW TO PLAY</p><h2>空を見て、地上を走る。</h2></div>
+<div class="race-steps">
+<article id="drive"><span class="step-number">01</span><h3>黄色い車を動かそう</h3><p>前後に走り、ハンドルで方向を変えます。まずは時間加速を×1にして操作に慣れましょう。白と青は同じチームの仲間です。</p></article>
+<article id="read"><span class="step-number">02</span><h3>気球と風を見よう</h3><p>気球は高さを変えて自動で飛びます。風の表と気球の動きから、マーカーが落ちる先を考えましょう。「俯瞰」で全体を見渡せます。</p></article>
+<article id="catch"><span class="step-number">03</span><h3>着地の瞬間に近づこう</h3><p><strong>マーカーが着地する瞬間に、黄色い車が30m以内</strong>なら回収成功。着地してから拾いに行くゲームではありません。</p></article>
 </div>
-
-<h3>スマホ・タブレット</h3>
-<p>画面右下にボタンが出ます。<b>🔥</b> がバーナー(長押し)、<b>RIP</b> がリップライン(長押し)、
-  <b>📍</b> がマーカー投下、<b>👁</b> が視点切替、<b>×1</b> が時間加速、<b>P</b> がパイバル表です。
-  画面のドラッグで視点が回り、ピンチでズームします。</p>
-
-<h2>計器の読みかた</h2>
-<p>画面上部の大きな数字が<b>高度(ft・MSL)</b>です。タップ/クリックで開くと、内訳が出ます。</p>
-<div class="tablewrap">
-<table>
-  <tr><th>高度(MSL)</th><td>平均海面からの高さ。パイバル表の高度と同じ基準です</td></tr>
-  <tr><th>対地高度</th><td>真下の地面からの高さ。着陸で見るのはこちら</td></tr>
-  <tr><th>昇降</th><td>上昇・下降の速さ(m/s)。バーナーの効き具合はここで見ます</td></tr>
-  <tr><th>風(現在高度)</th><td>いま乗っている風。風向は FROM(磁方位)</td></tr>
-  <tr><th>燃料</th><td>使い切ると上昇できません</td></tr>
-  <tr><th>エンベロープ温度</th><td>浮力のもと。焚くと上がり、放っておくと冷えます</td></tr>
-  <tr><th>ターゲット</th><td>ターゲットまでの距離と方位</td></tr>
-  <tr><th>残り時間</th><td>ゲーム内時間で30分</td></tr>
-</table>
-</div>
-
-<div class="note">
-  <b>コツ:</b> バーナーは「今の高度を保つため」ではなく「次の風に乗り換えるため」に焚きます。
-  温度が上がってから機体が動き出すまでに間があるので、<b>行きたい高度の手前で焚くのをやめる</b>のが基本です。
-</div>
-
-<h2>本格モードと、開発中の機能</h2>
-<p>画面左下の <b>本格モード</b> から入れます。</p>
-<ul class="plain">
-  <li><b>エリア・風・離陸地点を自分で選ぶ</b> — 日本全国、好きな場所を飛べます</li>
-  <li><b>街並み(PLATEAU)</b> — 国土交通省の3D都市モデルで実在の建物を重ねます(表示のみ。飛行の挙動は変わりません)。整備済みの地域だけに出ます</li>
-  <li><b>チェイスカー(地上クルー)</b> — 実在の道路を走る車が2台出ます。1号車は気球を追い、2号車はターゲット手前で待って地上風を報告します(<kbd>C</kbd> で無線)。開発途中版の機能です</li>
-</ul>
-<p class="lead">開発途中版は新機能を試せますが、動作は不安定です。</p>
-
-<h2>お知らせ・動画</h2>
-<ul class="plain">
-  <li>使い方の動画: <a href="https://youtube.com/shorts/CzceTExbo-c?si=IpRbXo7vmntgc5Gx" target="_blank" rel="noopener">YouTube</a> / <a href="https://www.instagram.com/supatory?utm_source=qr" target="_blank" rel="noopener">Instagram</a></li>
-  <li>本格モードの最新情報: <a href="https://www.instagram.com/hotairballoongames2026?utm_source=qr" target="_blank" rel="noopener">Instagram</a></li>
-</ul>
-
-<h2>理念</h2>
-<p class="lead">平和と幸せと安心と安全と楽しさを提供できる場でありたい。</p>
-<p class="lead">
-  SORA は実在の地形・気象データを扱いますが、<b>実機の運航判断に使えるものではありません</b>。
-  明確な基準のない項目については合否を判定せず、注意喚起にとどめています。
-</p>
-
-</div>
-
+<div class="note"><b>得点は2つ</b><p>回収成功で1,000点、黄色い車の道路走行100mにつき1点。道路点は着地または時間切れまで加算します。時間内に投下されていれば、その後も着地まで回収を続けられます。</p><p>距離・配点は試作のゲーム設定です。道路判定は読み込み済みの道路の近似で、交通ルールの判定ではありません。黄色い車は道路外も自由に走れます。</p></div>
+</section>
+<section id="controls" class="section reference">
+<div class="section-heading"><p class="eyebrow">DRIVER'S NOTE</p><h2>操作早見表</h2></div>
+<div class="reference-grid"><div><h3>PC</h3><dl class="controls">
+<div><dt><kbd>W</kbd> / <kbd>↑</kbd></dt><dd>前進</dd></div>
+<div><dt><kbd>S</kbd> / <kbd>↓</kbd></dt><dd>後退（逆入力でブレーキ）</dd></div>
+<div><dt><kbd>A</kbd><kbd>D</kbd> / <kbd>←</kbd><kbd>→</kbd></dt><dd>ハンドル</dd></div>
+<div><dt><kbd>V</kbd></dt><dd>進行方向／気球を見る</dd></div>
+<div><dt><kbd>P</kbd></dt><dd>パイバル表（高度別の風）</dd></div>
+<div><dt><kbd>1</kbd>〜<kbd>4</kbd></dt><dd>時間加速 ×1 / ×2 / ×4 / ×8</dd></div>
+</dl></div><div><h3>スマホ・共通のボタン</h3><p>画面の矢印を長押しして前後・ハンドルを操作します。👁で視点、Pで風の表、×1で時間加速を切り替えられます。</p><div class="note"><b>迷ったら、いったん全体を見る。</b><p>「俯瞰」で気球・車・マーカーを見渡し、「一時停止」で動きを止めて考えられます。「パネルを開く」から仲間・得点・計器を確認できます。</p></div></div></div>
+<details><summary>場所や風を選びたい</summary><div class="detail-content"><p>エリアを選び、風の表を確認・編集して、地図で気球の離陸地点を選びます。黄色い車はその近くから出発します。条件URLも共有できます。</p><a class="button small" href="./prototype/?setup=1">エリア・風・出発地点を選ぶ ↗</a></div></details>
+<details><summary>青と白の仲間、街並みについて</summary><div class="detail-content"><p>白は気球を追尾し、青はターゲット付近へ先行・待機します。青の100m以内への進入制限はゲーム内設定です。道路がつながっていなければ、到達できる範囲で待機します。</p><p>「レース設定」で街並みを選べます。PLATEAUの整備済み地域のみで表示され、建物による通行制限はありません。</p></div></details>
+</section>
+<section class="section next-flight"><p class="eyebrow">空と地上、ふたつの役割。</p><h2>操縦するなら、SORAへ。</h2><p>高さを変えて風を選び、投下を判断する。パイロットの役割はSORAで楽しめます。</p>
+<div class="actions"><a class="button" data-sora-link="home" href="https://rhitomigm-hash.github.io/SORA/">SORAで気球を操縦する ↗</a><a href="./balloon-guide.html">ソラくんたちの気球教室を読む</a></div></section>
+</main>
 <div style="text-align:center;margin:32px 16px"><a href="https://rhito-game-collection.rhitomigm.chatgpt.site" target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;min-height:44px;padding:8px 16px;border:1px solid currentColor;border-radius:10px;font-size:16px">他のゲームで遊ぶ ↗</a></div>
-<footer>
-  地形・写真・道路: <a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院 地理院タイル</a><br>
-  街並み: <a href="https://www.mlit.go.jp/plateau/" target="_blank" rel="noopener">3D都市モデル(Project PLATEAU)</a> / 国土交通省(CC BY 4.0)<br>
-  気象データ: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>
-</footer>
-
-</body>
-</html>
+<footer><a class="brand" href="./">GameTarget</a><p>平和と幸せと安心と安全と楽しさを提供できる場でありたい。</p><p>GameTargetはゲームです。実際の運航・運転の判断には使えません。</p>
+<p class="credits">地形・写真・道路：国土地理院 ／ 街並み：国土交通省 PLATEAU（CC BY 4.0）</p></footer>
+</body></html>
