@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GameTarget｜大人向け・詳しい遊び方</title>
+<meta name="description" content="GameTargetの大人向けガイド。車の運転、地図と俯瞰、地上風報告、マーカー回収と得点の条件を文章と図で詳しく解説します。">
+<meta name="theme-color" content="#087bbd">
+<link rel="stylesheet" href="./guide.css"><link rel="stylesheet" href="./entry.css"><link rel="stylesheet" href="./adult-guide.css">
+<script src="./sora-link.js" defer></script>
+</head>
+<body class="adult-guide">
+<a class="skip" href="#play">遊び方へスキップ</a>
+<header class="masthead"><a class="brand" href="./">GameTarget<span>大人向け・詳しい遊び方</span></a>
+<nav aria-label="メインナビゲーション"><a href="#play">遊び方</a><a href="#controls">操作</a><a href="#details">詳しいルール</a><a class="button small" href="./prototype/">回収レースで遊ぶ ↗</a></nav></header>
+<nav class="guide-switch" aria-label="説明ページを選ぶ"><a href="./">漫画で読む</a><a href="./adult-guide.html" aria-current="page">大人向け・詳しく読む</a><span>操作とルールを、文章と図で。</span></nav>
+<main>
+<section class="hero" aria-labelledby="hero-title">
+<div><p class="eyebrow">DRIVER’S GUIDE · 大人向け</p>
+<h1 id="hero-title">風を読んで、<br>落ちる先へ。<br><em>走るのは、きみ。</em></h1>
+<p class="intro">あなたは黄色いチェイスカーの運転手。<br>空を行く気球を追い、マーカーの着地点へ先回り。<br>青と白の仲間と、回収成功を目指そう。</p>
+<div class="actions"><a class="button" href="./prototype/">回収レースを始める ↗</a><a href="./prototype/?setup=1">エリア・風を選ぶ</a></div>
+<p class="meta">インストール不要 · PC / スマホ対応 · 気球は自動操縦</p>
+<p class="sora-route"><a data-sora-link="home" href="https://rhitomigm-hash.github.io/SORA/">気球を操縦したい方は SORA へ ↗</a></p></div>
+<div class="race-scene" role="img" aria-label="黄色い操作車、白い追尾車、青い先行車と気球の役割を示すイメージ図">
+<svg viewBox="0 0 600 520" aria-hidden="true">
+<rect width="600" height="520" rx="22" fill="#d9f2fc"/>
+<path d="M0 300Q110 240 230 300T600 280V520H0Z" fill="#b6d49b"/>
+<path d="M-30 430Q100 355 230 400T650 345" stroke="#435866" stroke-width="68" fill="none"/>
+<path d="M-30 430Q100 355 230 400T650 345" stroke="#fff4ba" stroke-width="3" stroke-dasharray="18 16" fill="none"/>
+<path d="M160 245Q310 180 420 245" fill="none" stroke="#087bbd" stroke-width="3" stroke-dasharray="8 9"/>
+<path d="M410 231l18 16-25 1" fill="none" stroke="#087bbd" stroke-width="3"/>
+<ellipse cx="205" cy="128" rx="65" ry="82" fill="#e9664b" stroke="#183a4b" stroke-width="3"/>
+<ellipse cx="205" cy="128" rx="30" ry="82" fill="#f4b951"/>
+<path d="M166 194l23 31h32l22-31" fill="none" stroke="#183a4b" stroke-width="3"/>
+<rect x="187" y="223" width="36" height="24" rx="3" fill="#b37b43" stroke="#183a4b" stroke-width="3"/>
+<path d="M395 210l20 58" stroke="#e9664b" stroke-width="4"/><circle cx="417" cy="278" r="6" fill="#e9664b"/>
+<g stroke="#183a4b" stroke-width="3">
+<g transform="translate(90 358)"><rect width="85" height="36" rx="10" fill="#fafafa"/><path d="M12 0l10-22h38l12 22" fill="#fafafa"/><circle cx="17" cy="38" r="10" fill="#183a4b"/><circle cx="68" cy="38" r="10" fill="#183a4b"/></g>
+<g transform="translate(280 379)"><rect width="88" height="37" rx="10" fill="#ffdc55"/><path d="M12 0l10-22h39l14 22" fill="#ffdc55"/><circle cx="17" cy="39" r="10" fill="#183a4b"/><circle cx="71" cy="39" r="10" fill="#183a4b"/></g>
+<g transform="translate(470 329)"><rect width="85" height="36" rx="10" fill="#3996dc"/><path d="M12 0l10-22h38l12 22" fill="#3996dc"/><circle cx="17" cy="38" r="10" fill="#183a4b"/><circle cx="68" cy="38" r="10" fill="#183a4b"/></g></g>
+<g fill="#183a4b" font-family="sans-serif" font-size="20" font-weight="700" text-anchor="middle">
+<text x="205" y="30">気球は自動操縦</text><text x="130" y="327">白：気球を追尾</text>
+<text x="325" y="463">黄色：あなたが運転</text><text x="490" y="290">青：先行・待機</text></g>
+</svg><p>役割のイメージ図</p></div>
+</section>
+<nav class="chapter-strip" aria-label="遊び方の流れ"><span>回収までの3ステップ</span><a href="#drive">01 車を運転</a><a href="#read">02 風を読む</a><a href="#catch">03 着地に合わせる</a></nav>
+<section id="play" class="section">
+<div class="section-heading"><p class="eyebrow">HOW TO PLAY</p><h2>空を見て、地上を走る。</h2></div>
+<div class="race-steps">
+<article id="drive"><span class="step-number">01</span><h3>黄色い車を動かそう</h3><p>前後に走り、ハンドルで方向を変えます。まず「ターゲット地図」で現在地と目標を確認し、ターゲットへ向かいましょう。ターゲットから100m以上離れて停車し、画面にターゲットが見えたら地上風を無線で送りましょう。初回は50点です。白と青は同じチームの仲間です。</p></article>
+<article id="read"><span class="step-number">02</span><h3>気球と風を見よう</h3><p>気球は高さを変えて自動で飛びます。風の表と気球の動きから、マーカーが落ちる先を考えましょう。「俯瞰」で全体を見渡しながら運転できます。マーカーの着地点は、オレンジのターゲットと同じ場所とは限りません。</p></article>
+<article id="catch"><span class="step-number">03</span><h3>マーカーに近づいて回収しよう</h3><p><strong>マーカーが着地する瞬間に、黄色い車が30m以内</strong>なら1,000点。着地後も30m以内へ近づけば500点で回収成功です。</p></article>
+</div>
+<div class="note"><b>得点は3つ</b><p>着地時の回収は1,000点、着地後は500点。黄色い車の道路走行100mにつき1点、初回の地上風報告は50点。道路点は着地または時間切れまで加算します。時間内に投下されていれば、時間切れ後・着地後も回収を続けられます。</p><p>距離・配点は試作のゲーム設定です。道路判定は読み込み済みの道路の近似で、交通ルールの判定ではありません。黄色い車は道路外も自由に走れます。</p></div>
+</section>
+<section id="controls" class="section reference">
+<div class="section-heading"><p class="eyebrow">DRIVER'S NOTE</p><h2>操作早見表</h2></div>
+<div class="reference-grid"><div><h3>PC</h3><dl class="controls">
+<div><dt><kbd>W</kbd> / <kbd>↑</kbd></dt><dd>前進</dd></div>
+<div><dt><kbd>S</kbd> / <kbd>↓</kbd></dt><dd>後退（逆入力でブレーキ）</dd></div>
+<div><dt><kbd>A</kbd><kbd>D</kbd> / <kbd>←</kbd><kbd>→</kbd></dt><dd>ハンドル</dd></div>
+<div><dt><kbd>V</kbd></dt><dd>進行方向／気球を見る</dd></div>
+<div><dt><kbd>O</kbd></dt><dd>俯瞰を開く／運転に戻る</dd></div>
+<div><dt><kbd>T</kbd></dt><dd>ターゲット地図（表示中は一時停止）</dd></div>
+<div><dt><kbd>P</kbd></dt><dd>パイバル表（高度別の風）</dd></div>
+<div><dt><kbd>1</kbd>〜<kbd>4</kbd></dt><dd>時間加速 ×1 / ×2 / ×4 / ×8</dd></div>
+</dl></div><div><h3>スマホ・共通のボタン</h3><p>「前進」「後退」で前後、← → でハンドルを操作します。各ボタンを長押ししてください。👁で視点、Pで風の表、×1で時間加速を切り替えられます。</p><p>通常視点で停車中は、ドラッグで周囲を見回せます。ホイール、スマホではピンチで拡大・縮小できます。走行を再開したときや視点を切り替えたときに、見回した向きと拡大率はリセットされます。</p><div class="note"><b>迷ったら、いったん全体を見る。</b><p>「ターゲット地図」で目標と現在地を確認し、「俯瞰」で気球・車・マーカーを見渡し、「一時停止」で動きを止めて考えられます。「パネルを開く」から仲間・得点・計器を確認できます。</p></div></div></div>
+<details><summary>場所や風を選びたい</summary><div class="detail-content"><p>エリアを選び、風の表を確認・編集して、地図で気球の離陸地点を選びます。黄色い車はその近くから出発します。条件URLも共有できます。</p><a class="button small" href="./prototype/?setup=1">エリア・風・出発地点を選ぶ ↗</a></div></details>
+<details><summary>青と白の仲間、街並みについて</summary><div class="detail-content"><p>白は気球を追尾し、青はターゲット付近へ先行・待機します。青の100m以内への進入制限はゲーム内設定です。道路がつながっていなければ、到達できる範囲で待機します。</p><p>「レース設定」で街並みを選べます。PLATEAUの整備済み地域のみで表示され、建物による通行制限はありません。</p></div></details>
+</section>
+<section class="section detailed-rules" id="details">
+<div class="section-heading"><p class="eyebrow">RULES &amp; TIMING</p><h2>判断に役立つ、詳しいルール。</h2></div>
+<div class="rule-grid">
+<article><span class="rule-label">MAP / OVERVIEW</span><h3>地図は停止、俯瞰は運転を継続</h3><p>「ターゲット地図」は北が上で、車の現在地・向きとターゲットを表示します。表示距離は直線距離です。地図の表示中は一時停止し、閉じると開く前の停止状態に戻ります。</p><p>「俯瞰」は全体を見渡す3D視点です。時間は進み、そのまま運転できます。考える時間が必要なら「一時停止」を使ってください。</p></article>
+<article><span class="rule-label">GROUND WIND</span><h3>地上風報告は、条件をそろえて1回</h3><p>ターゲットから水平100m以上離れて停車し、地図を閉じて3D画面にターゲットが見える状態にします。画面外や、地形・建物・パネルの陰に隠れている場合は送信できません。</p><p>「地上風を送信」を押すと、ゲーム内のターゲット地点の地上風を報告します。風向は吹いてくる向き（磁方位）、風速はノットです。1プレイ1回限りで50点。時間切れ・終了後は送信できません。報告しても気球の自動操縦の制御則は変わりません。</p></article>
+<article><span class="rule-label">RECOVERY</span><h3>着地後も、マーカーを迎えに行ける</h3><p>着地の瞬間に黄色い車がマーカーから30m以内なら1,000点。着地後に30m以内へ近づけば500点です。回収ボタンを押す必要はなく、距離の条件で判定します。</p><p>制限時間はゲーム内で30分。時間内に投下されていれば、時間切れ後も回収を続けられ、着地後の回収に追加の時間制限はありません。プレイ範囲の外へ出るなど、別の終了条件が成立した場合は終了します。</p></article>
+<article><span class="rule-label">SCORE / RECORD</span><h3>合計点と、着地時の距離を確認</h3><p>合計は「回収点＋道路走行点＋地上風報告点」。道路走行は読み込み済みの対象道路を100m走るごとに1点で、100m未満の端数は切り捨てです。着地または時間切れで道路加点を終了します。</p><p>リザルトの距離は、マーカーが着地した瞬間の黄色い車との距離です。着地後に回収しても、この記録は変わりません。距離・配点は試作のゲーム設定です。</p></article>
+</div>
+<div class="reading-return"><div><h3>会話で読みたいときは、漫画版へ。</h3><p>ソラくんたちが、同じ遊び方を8コマで案内します。</p></div><a class="button small" href="./">漫画の説明ページへ →</a></div>
+</section>
+<section class="section next-flight"><p class="eyebrow">空と地上、ふたつの役割。</p><h2>操縦するなら、SORAへ。</h2><p>高さを変えて風を選び、投下を判断する。パイロットの役割はSORAで楽しめます。</p>
+<div class="actions"><a class="button" data-sora-link="home" href="https://rhitomigm-hash.github.io/SORA/">SORAで気球を操縦する ↗</a><a href="./balloon-guide.html">ソラくんたちの気球教室を読む</a></div></section>
+</main>
+<div style="text-align:center;margin:32px 16px"><a href="https://rhito-game-collection.rhitomigm.chatgpt.site" target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;min-height:44px;padding:8px 16px;border:1px solid currentColor;border-radius:10px;font-size:16px">他のゲームで遊ぶ ↗</a></div>
+<footer><a class="brand" href="./">GameTarget</a><p>平和と幸せと安心と安全と楽しさを提供できる場でありたい。</p><p>GameTargetはゲームです。実際の運航・運転の判断には使えません。</p>
+<p class="credits">地形・写真・道路：国土地理院 ／ 街並み：国土交通省 PLATEAU（CC BY 4.0）</p></footer>
+</body></html>
