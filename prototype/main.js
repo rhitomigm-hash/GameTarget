@@ -3972,6 +3972,7 @@ function updateGroundWindReport(force = false) {
   if (!chaseMode || !started || !playerCar || chaseFinished) { panel.hidden = true; return; }
   if (!force && performance.now() - lastWindReportCheck < 250) return;
   lastWindReportCheck = performance.now();
+  // 表示後のパネルによる遮蔽も含めて判定する。同じ更新内で表示を確定し、ちらつきを防ぐ。
   panel.hidden = false;
   stackBottomLeft();
   const { distance, status } = groundWindConditions();
@@ -3992,7 +3993,7 @@ function updateGroundWindReport(force = false) {
   document.getElementById('ground-wind-send').textContent = '地上風を送信';
   document.getElementById('chase-wind-score').textContent = (chaseWindReported ? WIND_REPORT_POINTS : 0) + '点';
   document.getElementById('wind-report-confirmation').hidden = !chaseWindReported;
-  panel.hidden = chaseWindReported && distance >= TARGET_STANDOFF_M;
+  panel.hidden = status !== 'ready';
   stackBottomLeft();
 }
 function sendGroundWindReport() {
