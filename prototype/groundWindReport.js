@@ -1,14 +1,16 @@
 import * as THREE from 'three';
 
 export const TARGET_STANDOFF_M = 100;
+export const REPORT_MAX_DISTANCE_M = 400;
 export const REPORT_STOP_SPEED_MPS = 0.05;
 
 // 距離はターゲットからの水平距離。表示用に丸めた速度で停車を判定しない。
-export function groundWindReportStatus({ active, distance, speedMps, targetVisible }) {
+export function groundWindReportStatus({ active, distance, speedMps }) {
   if (!active) return 'inactive';
   if (!Number.isFinite(distance) || distance < TARGET_STANDOFF_M) return 'too-close';
+  if (distance > REPORT_MAX_DISTANCE_M) return 'too-far';
   if (!Number.isFinite(speedMps) || Math.abs(speedMps) > REPORT_STOP_SPEED_MPS) return 'moving';
-  return targetVisible ? 'ready' : 'not-visible';
+  return 'ready';
 }
 
 // 橙のXの中心と腕を確認。画面外・UI・地形・建物・車体に隠れた点は見えていると扱わない。

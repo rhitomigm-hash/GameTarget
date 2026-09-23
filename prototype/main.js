@@ -12,7 +12,7 @@ import { createPlayerCar } from './playerCar.js';
 import { createBalloonAutopilot } from './balloonAutopilot.js';
 import { createChaseOverview } from './chaseOverview.js';
 import { createRoadMeter, chasePoints, WIND_REPORT_POINTS } from './chaseScore.js';
-import { groundWindReportStatus, isTargetVisible, TARGET_STANDOFF_M } from './groundWindReport.js';
+import { groundWindReportStatus, TARGET_STANDOFF_M } from './groundWindReport.js';
 
 // 入力イベントや地形取得中のUIからも参照するため、await より先に確定する。
 const mainParams = new URLSearchParams(location.search);
@@ -3960,27 +3960,19 @@ function groundWindConditions() {
   const c = playerCar?.info();
   const active = chaseMode && started && !!c && !chaseFinished && !expired && !chaseWindReported;
   const distance = c ? Math.hypot(c.x - TARGET_XZ.x, c.z - TARGET_XZ.z) : Infinity;
-  const base = groundWindReportStatus({ active, distance, speedMps: c?.speedMps, targetVisible: false });
-  const visible = base === 'not-visible' && !targetMapOpen && isTargetVisible({
-    camera, target, scene, width: innerWidth, height: innerHeight,
-    screenVisible: (x, y) => document.elementFromPoint(x, y) === renderer.domElement,
-  });
-  return { distance, status: groundWindReportStatus({ active, distance, speedMps: c?.speedMps, targetVisible: visible }) };
+  return { distance, status: groundWindReportStatus({ active, distance, speedMps: c?.speedMps }) };
 }
 function updateGroundWindReport(force = false) {
   const panel = document.getElementById('ground-wind-report');
   if (!chaseMode || !started || !playerCar || chaseFinished) { panel.hidden = true; return; }
   if (!force && performance.now() - lastWindReportCheck < 250) return;
   lastWindReportCheck = performance.now();
-  // 表示後のパネルによる遮蔽も含めて判定する。同じ更新内で表示を確定し、ちらつきを防ぐ。
-  panel.hidden = false;
-  stackBottomLeft();
   const { distance, status } = groundWindConditions();
   const messages = {
     'inactive': '報告の受付時間が終了しました。',
     'too-close': 'ターゲットに近すぎます。100m以上離れて停車してください。',
-    'moving': 'ターゲットから100m以上離れて停車し、3D画面にターゲットが見えたら、地上風を送信できます。',
-    'not-visible': 'ターゲットが見える向きに画面を合わせてください。',
+    'too-far': 'ターゲットから400m以内に近づいてください。',
+    'moving': 'ターゲットから100m以上・400m以内で停車すると、地上風を送信できます。',
     'ready': '送信できます。地上風の報告は1回限り・50点です。',
   };
   const message = document.getElementById('ground-wind-status');
@@ -3998,7 +3990,7 @@ function updateGroundWindReport(force = false) {
 }
 function sendGroundWindReport() {
   if (chaseWindReported) return;
-  // ボタン表示後に移動・視点変更していても、送信時に現在の状態で再判定する。
+  // ボタン表示後に移動していても、送信時に現在の距離・速度で再判定する。
   if (groundWindConditions().status !== 'ready') { updateGroundWindReport(true); return; }
   const w = windAt(terrain.getHeight(TARGET_XZ.x, TARGET_XZ.z), TARGET_XZ.x, TARGET_XZ.z);
   if (!Number.isFinite(w.dir) || !Number.isFinite(w.kt) || w.kt < 0) return;

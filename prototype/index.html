@@ -766,7 +766,7 @@
 
 <div id="ground-wind-report" class="panel chase-only" hidden>
   <div id="ground-wind-distance">ターゲットまで -- m</div>
-  <div id="ground-wind-status" role="status" aria-live="polite">ターゲットから100m以上離れて停車し、3D画面にターゲットが見えたら、地上風を送信できます。</div>
+  <div id="ground-wind-status" role="status" aria-live="polite">ターゲットから100m以上・400m以内で停車すると、地上風を送信できます。</div>
   <button id="ground-wind-send" type="button" disabled>地上風を送信</button>
 </div>
 
@@ -774,7 +774,7 @@
   <div class="b-panel">
     <div class="b-title" id="target-map-title">ターゲット地図</div>
     <div id="target-map-distance"></div>
-    <div class="mapnote">橙の×：ターゲット ／ 黄色：車の現在地 ／ 北が上。点線の100m円より外で停車。</div>
+    <div class="mapnote">橙の×：ターゲット ／ 黄色：車の現在地 ／ 北が上。地上風の送信はターゲットから100m以上・400m以内で停車。</div>
     <canvas id="target-map-canvas" width="1280" height="1280" role="img" aria-label="ターゲットと黄色い車の現在位置を示す地図"></canvas>
     <div id="target-map-toolbar">
       <button id="target-map-zoom-in" type="button" aria-label="地図を拡大">＋</button>
@@ -796,7 +796,7 @@
     <p><b>W/S・↑/↓</b>で前後、<b>A/D・←/→</b>でハンドル。進行方向と逆の入力でブレーキ。スマホは画面の矢印を長押しします。</p>
     <p><b>V</b>で進行方向／気球を見る、<b>P</b>で風の表。<b>O</b>または「俯瞰」ボタンで全体を見る／運転に戻るを切り替えます。「一時停止」で落ち着いて考えられます。</p>
     <p>俯瞰でも車を運転できます。「進行方向を見る」「気球を見る」のどちらも停車中は、位置を動かさずドラッグで見回し、ホイール・2本指でズームできます。操作案内は停車時に5秒間表示します。走り始めると通常の運転視点に戻ります。Oキーで運転画面に戻れます。</p>
-    <p>ターゲットから<b>100m以上離れて停車</b>し、3D画面にターゲットが見えたら「地上風を送信」。送信可能な時だけ送信パネルが表示されます。送信は1回限りで50点です。送信後はパネルと無線が自動で閉じます。</p>
+    <p>ターゲットから<b>100m以上・400m以内で停車</b>すると「地上風を送信」。ターゲットが画面に見えていなくても送信できます。送信可能な時だけ送信パネルが表示されます。送信は1回限りで50点です。送信後はパネルと無線が自動で閉じます。</p>
     <p><b>着地の瞬間に黄色い車がマーカーの30m以内</b>なら1,000点。間に合わなくても、着地後に30m以内へ近づけば500点で回収成功です。</p>
     <p>回収点＋道路走行100mにつき1点＋初回の地上風報告50点。道路加点は着地または時間切れまで。時間内に投下されたマーカーは、時間切れ後も回収できます。青は目標付近へ先行・待機、白は気球を追尾する同じチームの仲間です。</p>
     <div class="howto-note">黄色い車は自由走行です。道路加点は読み込み済み道路でのゲーム用判定です。距離・配点は試作の設定で、交通ルールや実競技の基準ではありません。</div>
