@@ -41,6 +41,7 @@ export function createBalloonAutopilot({
   let cruiseFt = null;
   let sinceScan = 1e9;   // 初回は即座に選ぶ
   let dropped = false;
+  let dropAnnounced = false;
 
   // 現在地からターゲットへ、いちばん近い方位で運んでくれる高度を選ぶ。
   // 「方位の近さ」と「風速」の両方を見る(弱い風だと方位が合っていても進まない)
@@ -91,6 +92,24 @@ export function createBalloonAutopilot({
       if (dropped) return false;
       const d = Math.hypot(pos.x - targetX, pos.z - targetZ);
       return d <= dropDistM;
+    },
+
+    // 現在の風による到達予測。高度・風が変われば時刻も前後する。
+    dropNotice(pos) {
+      if (dropped || dropAnnounced) return null;
+      const x = pos.x - targetX, z = pos.z - targetZ;
+      const c = x * x + z * z - dropDistM * dropDistM;
+      let seconds = 0;
+      if (c > 0) {
+        const { vx, vz } = windAt(pos.y, pos.x, pos.z);
+        const a = vx * vx + vz * vz, b = x * vx + z * vz;
+        const discriminant = b * b - a * c;
+        if (a <= 0 || b >= 0 || discriminant < 0) return null;
+        seconds = c / (-b + Math.sqrt(discriminant));
+      }
+      if (!Number.isFinite(seconds) || seconds > 60) return null;
+      dropAnnounced = true;
+      return seconds;
     },
 
     markDropped() { dropped = true; },

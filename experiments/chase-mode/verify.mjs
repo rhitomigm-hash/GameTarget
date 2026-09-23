@@ -90,6 +90,10 @@ window.chaseTest = {
     marker.state.vel.set(0,-10,0); playerCar.setPosition(dist,0);
     stepChaseFlight(1/60);
   },
+  recoverGround: () => {
+    playerCar.setPosition(marker.state.pos.x + 30,marker.state.pos.z);
+    stepChaseFlight(1/60);
+  },
   expire: () => { remaining = 0.001; stepChaseFlight(1/60); },
   lateLanding: () => {
     state.pos.set(0,terrain.getHeight(0,0)+50,0); state.grounded=false;
@@ -213,9 +217,14 @@ try {
   await page.evaluate(() => localStorage.setItem('balloon-jdg-proto-best','12.3'));
   for (const dist of [20, 31]) {
     await page.evaluate(dist => { window.chaseTest.reset(0,0); window.chaseTest.nearLanding(dist); }, dist);
+    if (dist === 31) {
+      assert(!(await page.evaluate(() => window.chaseTest.snap())).chaseFinished);
+      assert(await page.locator('#result').isHidden());
+      await page.evaluate(() => window.chaseTest.recoverGround());
+    }
     const result = await page.locator('#result-sub').innerText();
-    assert(result.includes(dist === 20 ? '回収成功' : '回収できません'));
-    assert(result.includes(dist === 20 ? '回収 1000点' : '回収 0点'));
+    assert(result.includes('回収成功'));
+    assert(result.includes(dist === 20 ? '回収 1000点' : '回収 500点'));
     assert((await page.evaluate(() => window.chaseTest.snap())).chaseFinished);
   }
   assert.equal(await page.evaluate(() => localStorage.getItem('balloon-jdg-proto-best')), '12.3');
@@ -239,7 +248,7 @@ try {
     await page.evaluate(({x,z,rows}) => window.chaseTest.reset(x,z,rows), {x,z,rows});
     const trial = await page.evaluate(dt => window.chaseTest.simulate(1801,dt), dt);
     assert(Number.isFinite(trial.altitude));
-    assert(trial.result.length > 0);
+    assert(trial.landed || trial.result.length > 0);
     if (name === '20m start') assert(trial.dropped && trial.landed);
     trials.push({name,...trial});
   }

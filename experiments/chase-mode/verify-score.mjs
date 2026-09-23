@@ -16,6 +16,12 @@ assert.equal(meter.measure(p(0,100),p(100,100)),0);
 let smallSteps=0;
 for(let x=0;x<100;x++)smallSteps+=meter.measure(p(x,0),p(x+1,0));
 assert.equal(smallSteps,meter.measure(p(0,0),p(100,0)));
-assert.deepEqual(chasePoints(true,1099),{recovery:1000,road:10,total:1010});
-assert.deepEqual(chasePoints(false,36000),{recovery:0,road:360,total:360});
+assert.deepEqual(chasePoints(true,1099),{recovery:1000,road:10,windReport:0,total:1010});
+assert.deepEqual(chasePoints(false,36000),{recovery:0,road:360,windReport:0,total:360});
+assert.deepEqual(chasePoints(true,1099,true),{recovery:500,road:10,windReport:0,total:510});
+assert.deepEqual(chasePoints(false,1099,true),{recovery:0,road:10,windReport:0,total:10});
 console.log('PASS: 道路距離・横断・道路外・停止・往復・重複・追加タイル・高速道路除外・刻み・採点');
+
+assert.deepEqual(chasePoints(true,1099,false,true),{recovery:1000,road:10,windReport:50,total:1060});
+assert.deepEqual(chasePoints(true,1099,true,true),{recovery:500,road:10,windReport:50,total:560});
+assert.deepEqual(chasePoints(false,0,false,true),{recovery:0,road:0,windReport:50,total:50});

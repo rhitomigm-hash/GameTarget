@@ -12,6 +12,7 @@ export function createChaseOverview({ camera, scene, getHeight }) {
   const projected = new THREE.Vector3();
   const originalFog = scene.fog, originalFar = camera.far;
   let distance = 120, initialized = false;
+  function reset() { initialized = false; }
   const labels = document.createElement('div');
   labels.id = 'chase-overview-labels';
   labels.hidden = true;
@@ -27,7 +28,7 @@ export function createChaseOverview({ camera, scene, getHeight }) {
 
   function hide() {
     labels.hidden = true;
-    initialized = false;
+    reset();
     camera.clearViewOffset();
     camera.far = originalFar;
     camera.updateProjectionMatrix();
@@ -41,6 +42,7 @@ export function createChaseOverview({ camera, scene, getHeight }) {
     const safeHeight = Math.max(80, height - top - insets.bottom - 32);
     box.makeEmpty();
     const corners = [];
+    const marker = points.find(p => p.id === 'marker');
     for (const { pos, radius } of points) {
       for (const x of [-1, 1]) for (const y of [-1, 1]) for (const z of [-1, 1]) {
         const p = new THREE.Vector3(pos.x + x * radius, pos.y + y * radius, pos.z + z * radius);
@@ -63,7 +65,7 @@ export function createChaseOverview({ camera, scene, getHeight }) {
       ));
     }
     // 引くときは枠外に出さず、寄るときは滑らかに追う。
-    distance = initialized ? Math.max(required, THREE.MathUtils.lerp(distance, required, alpha)) : required;
+    distance = required;
     camera.position.copy(center).addScaledVector(back, distance);
     const ground = getHeight(camera.position.x, camera.position.z);
     distance = Math.max(distance, (ground + 60 - center.y) / back.y);
@@ -80,11 +82,12 @@ export function createChaseOverview({ camera, scene, getHeight }) {
     for (const { id, pos } of points) {
       projected.copy(pos).project(camera);
       const el = items.get(id);
-      el.hidden = projected.z < -1 || projected.z > 1;
+      if (id === 'marker') el.textContent = marker?.landed ? 'マーカー着地点' : 'マーカー';
+      el.hidden = projected.z < -1 || projected.z > 1 || Math.abs(projected.x) > 1 || Math.abs(projected.y) > 1;
       el.style.left = `${(projected.x + 1) * width / 2}px`;
       el.style.top = `${(1 - projected.y) * height / 2}px`;
     }
     initialized = true;
   }
-  return { update, hide };
+  return { update, hide, reset };
 }

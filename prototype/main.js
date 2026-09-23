@@ -1,3 +1,4 @@
+import { createStoppedCamera } from './stoppedCamera.js';
 // 熱気球フライト プロトタイプ
 // 佐賀・嘉瀬川周辺(約20km四方)を地理院タイルから生成し、
 // バーナー/リップライン(上下操作)+ 高度別レイヤーの風で飛ぶ。
@@ -10,7 +11,8 @@ import { createChaseCar } from './chasecar.js';
 import { createPlayerCar } from './playerCar.js';
 import { createBalloonAutopilot } from './balloonAutopilot.js';
 import { createChaseOverview } from './chaseOverview.js';
-import { createRoadMeter, chasePoints } from './chaseScore.js';
+import { createRoadMeter, chasePoints, WIND_REPORT_POINTS } from './chaseScore.js';
+import { groundWindReportStatus, isTargetVisible, TARGET_STANDOFF_M } from './groundWindReport.js';
 
 // 入力イベントや地形取得中のUIからも参照するため、await より先に確定する。
 const mainParams = new URLSearchParams(location.search);
@@ -21,9 +23,12 @@ const devMode = !chaseMode && mainParams.has('dev');
 let playerCar = null, autopilot = null, chaseBounds = null;
 let chaseFinished = false, chaseLookBalloon = false;
 let chasePaused = false;
+let targetMapOpen = false, targetMapApi = null, targetMapWasPaused = false;
 let chaseRoadMeters = 0, chaseRoadMeter = null, chaseLaunch = null;
 let chaseCrewLoading = false;
-let chaseOverview = false, overviewController = null;
+let chaseWindReported = false, lastWindReportCheck = 0;
+let chaseOverview = false, overviewController = null, stoppedCamera = null;
+let stoppedHintWasStopped = false, stoppedHintUntil = 0;
 let chasePanelSnapshot = null;
 const chasePanels = [];
 const carKeys = new Set();
@@ -500,7 +505,10 @@ function toggleFpv() {
   if (chaseMode) {
     // Vは運転用の2視点。俯瞰中なら運転へ戻ったうえで切り替える。
     if (chaseOverview) toggleChaseOverview();
+    stoppedCamera?.reset();
     chaseLookBalloon = !chaseLookBalloon;
+    updateChaseCamera(0);
+    renderer.render(scene, camera);
     return;
   }
   if (fpv) {
@@ -572,11 +580,17 @@ function togglePibal() {
 }
 
 function toggleChaseOverview() {
-  if (!chaseMode || !started) return;
+  if (!chaseMode || !started || !playerCar || !overviewController) return;
   chaseOverview = !chaseOverview;
+  stoppedCamera?.reset();
+  overviewController.reset();
+
   if (!chaseOverview) overviewController?.hide();
+  // ボタンとカメラを同じ操作内で更新する。一時停止・無線操作の直後も次フレームを待たない。
+  updateChaseCamera(0);
+  renderer.render(scene, camera);
   const btn = document.getElementById('chase-overview-btn');
-  btn.textContent = chaseOverview ? '運転に戻る' : '俯瞰';
+  btn.textContent = chaseOverview ? '運転に戻る(O)' : '俯瞰(O)';
   btn.setAttribute('aria-pressed', String(chaseOverview));
 }
 
@@ -610,6 +624,13 @@ function cycleTimeScale() {
 }
 
 addEventListener('keydown', (e) => {
+  if (targetMapOpen) {
+    if ((e.code === 'Escape' || e.code === 'KeyT') && !e.repeat) {
+      e.preventDefault();
+      closeTargetMap();
+    }
+    return;
+  }
   if (chaseMode) {
     if (e.target.closest?.('input, textarea, select, [contenteditable="true"]')) return;
     if (['KeyW', 'KeyS', 'KeyA', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
@@ -619,6 +640,8 @@ addEventListener('keydown', (e) => {
     }
     if (['Space', 'KeyR', 'KeyM'].includes(e.code)) { e.preventDefault(); return; }
     if (e.repeat) return;
+    if (e.code === 'KeyT') { e.preventDefault(); openTargetMap(); return; }
+    if (e.code === 'KeyO') { e.preventDefault(); toggleChaseOverview(); return; }
   }
   if (e.code === 'Space') { input.burner = true; e.preventDefault(); }
   if (e.code === 'KeyR') input.rip = true;
@@ -649,6 +672,49 @@ function clearCarInput() {
   carKeys.clear();
   document.querySelectorAll('[data-car-key]').forEach(btn => btn.classList.remove('active'));
 }
+function openTargetMap() {
+  if (!chaseMode || !started || !playerCar || targetMapOpen) return;
+  targetMapWasPaused = chasePaused;
+  if (!chasePaused && !chaseFinished) toggleChasePause();
+  clearCarInput();
+  targetMapOpen = true;
+  document.getElementById('target-map-overlay').style.display = 'flex';
+  document.getElementById('target-map-btn').setAttribute('aria-expanded', 'true');
+  document.getElementById('target-map-pause-note').textContent = chaseFinished
+    ? '終了時点の位置を表示しています。'
+    : targetMapWasPaused ? '一時停止中です。地図を閉じても一時停止を維持します。' : '地図を表示中は一時停止しています。閉じると運転を再開します。';
+  targetMapApi ||= setupLaunchMap({ canvasId: 'target-map-canvas', navigationOnly: true });
+  targetMapApi.fitTargets();
+  const c = playerCar.info();
+  const distance = Math.hypot(c.x - TARGET_XZ.x, c.z - TARGET_XZ.z);
+  const bearing = (Math.atan2(TARGET_XZ.x - c.x, -(TARGET_XZ.z - c.z)) * 180 / Math.PI + 360) % 360;
+  document.getElementById('target-map-distance').textContent = 'ターゲットまで直線 ' + distText(distance)
+    + (distance >= 1 ? ' ／ 現在地から' + compass8(bearing) : ' ／ ターゲット付近');
+  document.getElementById('target-map-close').focus();
+}
+function closeTargetMap() {
+  if (!targetMapOpen) return;
+  targetMapOpen = false;
+  document.getElementById('target-map-overlay').style.display = 'none';
+  document.getElementById('target-map-btn').setAttribute('aria-expanded', 'false');
+  clearCarInput();
+  if (!targetMapWasPaused && chasePaused && !chaseFinished) toggleChasePause();
+  document.getElementById('target-map-btn').focus();
+}
+document.getElementById('target-map-btn').addEventListener('click', openTargetMap);
+document.getElementById('target-map-close').addEventListener('click', closeTargetMap);
+document.getElementById('target-map-fit').addEventListener('click', () => targetMapApi?.fitTargets());
+document.getElementById('target-map-zoom-in').addEventListener('click', () => targetMapApi?.zoomBy(1));
+document.getElementById('target-map-zoom-out').addEventListener('click', () => targetMapApi?.zoomBy(-1));
+document.getElementById('target-map-overlay').addEventListener('keydown', e => {
+  if (e.key !== 'Tab') return;
+  const items = [...e.currentTarget.querySelectorAll('button, a[href]')];
+  const first = items[0], last = items[items.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
+addEventListener('resize', () => { if (targetMapOpen) targetMapApi?.render(); });
+
 function toggleChasePause() {
   if (!chaseMode || !started || chaseFinished) return;
   chasePaused = !chasePaused;
@@ -729,6 +795,7 @@ if (chaseMode) {
     panel.addEventListener('toggle', updateChasePanels);
   }
   document.getElementById('chase-overview-btn').addEventListener('click', toggleChaseOverview);
+
   document.getElementById('chase-pause-btn').addEventListener('click', toggleChasePause);
   document.getElementById('chase-panels-btn').addEventListener('click', toggleChasePanels);
   addEventListener('resize', updateChasePanels);
@@ -1333,6 +1400,8 @@ let roadOrbitBtn = null;  // Shift+V と同じ切り替えのボタン(作り直
 let roadRadioBtn = null;  // 無線を開く/閉じるボタン(C と同じ。作り直さない)
 // radioEl は街並みの節で先に宣言している(TDZ を避けるため)
 let radioOpen = false;
+let balloonRadioMessage = '';
+let balloonRadioSpeaker = '気球からの無線';
 let roadStatusShown = false;   // 隠しコマンド Shift+C で出しているか
 
 /**
@@ -1346,9 +1415,21 @@ let roadStatusShown = false;   // 隠しコマンド Shift+C で出している�
 function stackBottomLeft() {
   const help = document.getElementById('help');
   let bottom = 12 + (help ? help.offsetHeight : 0) + 8;
-  for (const el of [roadStatusEl, radioEl, cityStatusEl]) {
-    if (!el || !el.isConnected || el.style.display === 'none') continue;
+  for (const el of [document.getElementById('ground-wind-report'), roadStatusEl, radioEl, cityStatusEl]) {
+    if (!el || el.hidden || !el.isConnected || el.style.display === 'none') continue;
     el.style.bottom = `${bottom}px`;
+    if (chaseMode) {
+      // 無線を開いても、スマホの運転ボタンと一時停止を隠さない。
+      for (const id of ['touch-controls', 'chase-actions']) {
+        const controls = document.getElementById(id)?.getBoundingClientRect();
+        const panel = el.getBoundingClientRect();
+        if (controls?.height && panel.left < controls.right && panel.right > controls.left
+          && panel.top < controls.bottom && panel.bottom > controls.top) {
+          bottom = Math.max(bottom, innerHeight - controls.top + 8);
+          el.style.bottom = `${bottom}px`;
+        }
+      }
+    }
     bottom += el.offsetHeight + 8;
   }
 }
@@ -1404,6 +1485,8 @@ async function loadRoadNetwork() {
   // 無線パネル。**問い合わせ形式**なので、開いている間だけ報告を出す
   radioEl = document.createElement('div');
   radioEl.id = 'road-radio';
+  radioEl.setAttribute('role', 'status');
+  radioEl.setAttribute('aria-live', 'polite');
   radioEl.className = 'panel';
   radioEl.style.display = 'none';
   document.body.appendChild(radioEl);
@@ -1679,15 +1762,39 @@ function briefLine() {
 // **合否は言わない。**「回収可能/不可」「着陸に適する/適さない」は出さず、
 // 事実(どこまで道が続いているか、いま何m地点か、そこの地上風は何か)だけを言う。
 function toggleRadio() {
-  if (!radioEl || !chaseCar2) return;
+  if (!radioEl || (!chaseCar2 && !balloonRadioMessage)) return;
   radioOpen = !radioOpen;
   radioEl.style.display = radioOpen ? '' : 'none';
   if (radioOpen) updateRadio();
   stackBottomLeft();
 }
 
+function announceBalloon(message, speaker = '気球からの無線') {
+  balloonRadioMessage = message;
+  balloonRadioSpeaker = speaker;
+  radioOpen = true;
+  if (radioEl) radioEl.style.display = '';
+  updateRadio();
+}
+
 function updateRadio() {
-  if (!radioEl || !chaseCar2) return;
+  if (!radioEl) return;
+  if (chaseMode && balloonRadioMessage) {
+    if (radioEl.dataset.message !== balloonRadioSpeaker + balloonRadioMessage) {
+      radioEl.replaceChildren();
+      const text = document.createElement('div');
+      text.textContent = balloonRadioSpeaker + ': ' + balloonRadioMessage;
+      const close = document.createElement('button');
+      close.textContent = '閉じる(C)';
+      close.addEventListener('click', toggleRadio);
+      radioEl.append(text, close);
+
+      radioEl.dataset.message = balloonRadioSpeaker + balloonRadioMessage;
+    }
+    stackBottomLeft();
+    return;
+  }
+  if (!chaseCar2) return;
   const c = chaseCar2.info();
   const st = secondCarState(c);
   // 車の現在地の地上風(対地高度0)。**報告地点が「車の現在地」になったのが第3段階**
@@ -2369,8 +2476,8 @@ async function fetchSunriseSunset() {
 
 // ブリーフィング地図: ズーム(ホイール)+パン(ドラッグ)可能な簡易スリッピーマップ。
 // ズームに応じて標準地図タイルを z11〜z17 から選んで表示する
-function setupLaunchMap() {
-  const cv = document.getElementById('launch-map');
+function setupLaunchMap({ canvasId = 'launch-map', navigationOnly = false } = {}) {
+  const cv = document.getElementById(canvasId);
   const ctx = cv.getContext('2d');
   const M = terrain.map;
   const tm13 = terrain.tileMeters;            // z13タイルの一辺(m)
@@ -2394,7 +2501,7 @@ function setupLaunchMap() {
       .then((r) => { if (!r.ok) throw 0; return r.blob(); })
       .then(createImageBitmap)
       .then((bmp) => { tiles.set(key, bmp); render(); })
-      .catch(() => tiles.set(key, 'error'));
+      .catch(() => { tiles.set(key, 'error'); render(); });
     return null;
   }
 
@@ -2414,6 +2521,7 @@ function setupLaunchMap() {
   }
 
   function render() {
+    if (navigationOnly && !targetMapOpen) return;
     ctx.fillStyle = '#0d1620';
     ctx.fillRect(0, 0, cv.width, cv.height);
 
@@ -2429,16 +2537,62 @@ function setupLaunchMap() {
     const txMax = Math.min(Math.floor((c13x + wR / tm13) * f), Math.ceil((M.x0 + M.n) * f) - 1);
     const tyMin = Math.max(Math.floor((c13y + wT / tm13) * f), Math.floor(M.y0 * f));
     const tyMax = Math.min(Math.floor((c13y + wB / tm13) * f), Math.ceil((M.y0 + M.n) * f) - 1);
+    let readyTiles = 0, failedTiles = 0, pendingTiles = 0;
     for (let ty = tyMin; ty <= tyMax; ty++) {
       for (let tx = txMin; tx <= txMax; tx++) {
         const bmp = getTile(z, tx, ty);
-        if (!bmp) continue;
+        if (!bmp) {
+          if (tiles.get(z + '/' + tx + '/' + ty) === 'error') failedTiles++;
+          else pendingTiles++;
+          continue;
+        }
+        readyTiles++;
         const [sx, sy] = worldToScreen((tx / f - c13x) * tm13, (ty / f - c13y) * tm13);
         const s = tmz * view.scale;
         ctx.drawImage(bmp, sx, sy, s + 0.5, s + 0.5);
       }
     }
 
+    if (navigationOnly) {
+      const status = document.getElementById('target-map-status');
+      status.textContent = failedTiles ? '背景地図の一部を読み込めません。現在地・ターゲットの位置は表示しています。'
+        : pendingTiles ? '背景地図を読み込み中…' : '';
+      if (!readyTiles) {
+        ctx.strokeStyle = '#34516b'; ctx.lineWidth = 1;
+        for (let n = 0; n <= 8; n++) {
+          const p = cv.width * n / 8;
+          ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, cv.height); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(cv.width, p); ctx.stroke();
+        }
+      }
+      const ratio = cssRatio();
+      const [targetX, targetY] = worldToScreen(TARGET_XZ.x, TARGET_XZ.z);
+      ctx.save(); ctx.strokeStyle = '#d94d00'; ctx.lineWidth = 2 * ratio;
+      ctx.setLineDash([5 * ratio, 4 * ratio]);
+      ctx.beginPath(); ctx.arc(targetX, targetY, TARGET_STANDOFF_M * view.scale, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+      const symbol = (x, z, color, label, car = false) => {
+        const [sx, sy] = worldToScreen(x, z);
+        ctx.save(); ctx.translate(sx, sy); ctx.scale(ratio, ratio);
+        ctx.fillStyle = '#101a24'; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 4;
+        if (car) {
+          ctx.save(); ctx.rotate(playerCar.info().headingDeg * Math.PI / 180);
+          ctx.beginPath(); ctx.moveTo(0, -9); ctx.lineTo(7, 7); ctx.lineTo(0, 4); ctx.lineTo(-7, 7); ctx.closePath(); ctx.fill(); ctx.restore();
+        } else {
+          ctx.beginPath(); ctx.moveTo(-7,-7); ctx.lineTo(7,7); ctx.moveTo(-7,7); ctx.lineTo(7,-7); ctx.stroke();
+        }
+        ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center';
+        const width = ctx.measureText(label).width + 12;
+        const labelY = car ? 30 : -22;
+        ctx.fillStyle = '#101a24'; ctx.fillRect(-width / 2, labelY - 12, width, 19);
+        ctx.fillStyle = color; ctx.fillText(label, 0, labelY + 2); ctx.restore();
+      };
+      symbol(TARGET_XZ.x, TARGET_XZ.z, '#ff914d', 'ターゲット');
+      const car = playerCar.info();
+      symbol(car.x, car.z, '#ffca5b', '現在地', true);
+      return;
+    }
     // ターゲット(橙X+白丸)
     const [tx, ty] = worldToScreen(TARGET_XZ.x, TARGET_XZ.z);
     ctx.strokeStyle = '#ffffff';
@@ -2493,12 +2647,13 @@ function setupLaunchMap() {
     },
     onTap: (ox, oy) => {
       const [wx, wz] = screenToWorld(ox * cssRatio(), oy * cssRatio());
-      selectAt(wx, wz);
+      if (!navigationOnly) selectAt(wx, wz);
     },
     onZoom: zoomAt,
   });
 
   function selectAt(wx, wz) {
+    if (navigationOnly) return;
     launchSel.x = THREE.MathUtils.clamp(wx, M.minX, M.minX + terrain.sizeMeters);
     launchSel.z = THREE.MathUtils.clamp(wz, M.minZ, M.minZ + terrain.sizeMeters);
     render();
@@ -2508,8 +2663,18 @@ function setupLaunchMap() {
     btn.textContent = `${chaseMode ? '回収レースを開始' : '離陸!'}(ターゲットまで ${(d / 1000).toFixed(2)} km)`;
   }
 
+  function fitTargets() {
+    if (!navigationOnly) return;
+    const car = playerCar.info();
+    view.x = (car.x + TARGET_XZ.x) / 2;
+    view.z = (car.z + TARGET_XZ.z) / 2;
+    const span = Math.max(1600, Math.abs(car.x - TARGET_XZ.x), Math.abs(car.z - TARGET_XZ.z));
+    view.scale = THREE.MathUtils.clamp(cv.width / (span * 1.45), fitScale, MAX_SCALE);
+    clampView();
+    render();
+  }
   render();
-  return { selectAt };
+  return { selectAt, render, fitTargets, zoomBy: dir => zoomAt(cv.clientWidth / 2, cv.clientHeight / 2, dir) };
 }
 
 document.getElementById('launch-btn').addEventListener('click', () => {
@@ -3320,6 +3485,8 @@ function startFlight(x, z) {
     const tm = terrain.map;
     chaseLaunch = { x, z };
     chaseRoadMeters = 0;
+    chaseWindReported = false;
+    lastWindReportCheck = 0;
     chaseBounds = {
       minX: tm.minX, minZ: tm.minZ,
       maxX: tm.minX + tm.n * terrain.tileMeters,
@@ -3334,7 +3501,17 @@ function startFlight(x, z) {
     scene.add(playerCar.group);
     overviewController ||= createChaseOverview({ camera, scene, getHeight: terrain.getHeight });
     document.getElementById('chase-overview-btn').disabled = false;
+    stoppedCamera ||= createStoppedCamera({camera, element:renderer.domElement,
+      canMove:()=>chaseMode && started && !chaseOverview && !targetMapOpen && Math.abs(playerCar.info().speedMps)<=.05,
+      render:()=>renderer.render(scene,camera)});
+    document.getElementById('target-map-btn').disabled = false;
     document.getElementById('chase-pause-btn').disabled = false;
+    balloonRadioMessage = '';
+    radioOpen = false;
+    if (radioEl) {
+      radioEl.style.display = 'none';
+      delete radioEl.dataset.message;
+    }
     autopilot = createBalloonAutopilot({
       windAt, getHeight: terrain.getHeight, targetX: TARGET_XZ.x, targetZ: TARGET_XZ.z,
     });
@@ -3356,6 +3533,22 @@ scene.add(target);
 
 // マーカーは1本。dropped後は marker.state が物理を持つ
 const marker = { available: 1, state: null, mesh: null };
+// 軌跡表示は一旦停止。観察はマーカー追尾を使う。
+const MARKER_TRAIL_ENABLED = false;
+const markerTrailPoints = [];
+const markerTrail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xff80ab }));
+markerTrail.frustumCulled = false;
+markerTrail.visible = MARKER_TRAIL_ENABLED;
+scene.add(markerTrail);
+function updateMarkerTrail(force = false) {
+  if (!MARKER_TRAIL_ENABLED || !chaseMode || !marker.state) return;
+  const pos = marker.state.pos;
+  if (!force && markerTrailPoints.length && markerTrailPoints.at(-1).distanceToSquared(pos) < 1) return;
+  markerTrailPoints.push(pos.clone());
+  const old = markerTrail.geometry;
+  markerTrail.geometry = new THREE.BufferGeometry().setFromPoints(markerTrailPoints);
+  old.dispose();
+}
 
 function dropMarker() {
   if (marker.available <= 0 || state.grounded || expired) return;
@@ -3370,6 +3563,8 @@ function dropMarker() {
   marker.mesh.position.copy(marker.state.pos);
   scene.add(marker.mesh);
   document.getElementById('marker-info').textContent = '投下!';
+
+  updateMarkerTrail(true);
 }
 
 function stepMarker(dt) {
@@ -3386,10 +3581,12 @@ function stepMarker(dt) {
     m.pos.y = ground + 0.3;
     m.landed = true;
     marker.mesh.position.copy(m.pos);
+    updateMarkerTrail(true);
     onMarkerLanded(m.pos);
     return;
   }
   marker.mesh.position.copy(m.pos);
+  updateMarkerTrail();
   marker.mesh.rotation.y += 2 * dt; // リボンの回転(演出)
   document.getElementById('marker-info').textContent = `落下中 ${Math.round(m.pos.y - ground)}m`;
 }
@@ -3398,7 +3595,13 @@ function onMarkerLanded(pos) {
   if (chaseMode) {
     const c = playerCar.info();
     const dist = Math.hypot(pos.x - c.x, pos.z - c.z);
-    finishChase(dist, dist <= CHASE_CATCH_RADIUS_M ? '回収成功!' : '回収できませんでした');
+    marker.state.landingDistance = dist;
+    if (dist <= CHASE_CATCH_RADIUS_M) {
+      finishChase(dist, '回収成功!（着地時）');
+    } else {
+      document.getElementById('marker-info').textContent = '着地済み — 30m以内で回収500点';
+      announceBalloon('マーカーが着地しました。30m以内に近づいて回収をお願いします。着地後の回収は500点です。');
+    }
     return;
   }
   const dist = Math.hypot(pos.x - TARGET_XZ.x, pos.z - TARGET_XZ.z);
@@ -3426,7 +3629,7 @@ function showResult(dist, note) {
 }
 
 // JDGとは別の終了処理。未投下・範囲外には距離の記録を付けない。
-function finishChase(dist, note) {
+function finishChase(dist, note, afterLanding = false) {
   if (chaseFinished) return;
   chaseFinished = true;
   document.getElementById('chase-pause-btn').disabled = true;
@@ -3437,12 +3640,12 @@ function finishChase(dist, note) {
   document.querySelector('#result .r-title').textContent = 'マーカー回収 リザルト';
   document.querySelector('#result .r-dist').hidden = dist === null;
   const lines = [note];
-  const points = chasePoints(dist !== null && dist <= CHASE_CATCH_RADIUS_M, chaseRoadMeters);
-  lines.push(`回収 ${points.recovery}点 + 道路走行 ${points.road}点 = 合計 ${points.total}点`);
+  const points = chasePoints(afterLanding || (dist !== null && dist <= CHASE_CATCH_RADIUS_M), chaseRoadMeters, afterLanding, chaseWindReported);
+  lines.push(`回収 ${points.recovery}点 + 道路走行 ${points.road}点 + 地上風報告 ${points.windReport}点 = 合計 ${points.total}点`);
   lines.push(`道路走行 ${(chaseRoadMeters / 1000).toFixed(2)} km（100mにつき1点・端数切捨て）`);
   if (dist !== null) {
     document.getElementById('result-dist').textContent = dist.toFixed(1);
-    lines.push(`着地時の車との距離 / ${CHASE_CATCH_RADIUS_M}m以内で成功（ゲーム内ルール）`);
+    lines.push(`着地時の車との距離 / ${CHASE_CATCH_RADIUS_M}m以内なら1,000点・着地後の回収は500点`);
     try {
       const saved = localStorage.getItem(CHASE_BEST_KEY);
       const prev = saved === null ? Infinity : Number(saved);
@@ -3455,6 +3658,18 @@ function finishChase(dist, note) {
   document.getElementById('result-sub').textContent = lines.join('\n');
   document.getElementById('result').style.display = '';
   document.getElementById('marker-info').textContent = note;
+}
+
+// 着地時の距離は記録として保持し、回収判定には現在の黄色い車の位置を使う。
+function checkGroundRecovery() {
+  if (chaseFinished || !marker.state?.landed) return;
+  const c = playerCar.info(), p = marker.state.pos;
+  const distance = Math.hypot(p.x - c.x, p.z - c.z);
+  if (distance <= CHASE_CATCH_RADIUS_M) {
+    finishChase(marker.state.landingDistance, '回収成功!（着地後）', true);
+  } else {
+    document.getElementById('marker-info').textContent = '着地済み / あと' + Math.ceil(Math.max(0, distance - CHASE_CATCH_RADIUS_M)) + 'mで回収500点';
+  }
 }
 
 function stepChaseFlight(dt) {
@@ -3478,7 +3693,7 @@ function stepChaseFlight(dt) {
     playerCar.update(tick, drive);
     if (chaseCar) chaseCar.update(tick, state.pos.x, state.pos.z);
     if (chaseCar2) chaseCar2.update(tick);
-    if (!expired && chaseRoadMeter) {
+    if (!expired && !marker.state?.landed && chaseRoadMeter) {
       const afterDrive = playerCar.info();
       // 制限時間をまたぐ最後の刻みも、残り時間までの走行だけ加点する。
       const fraction = Math.min(1, Math.max(0, remaining / tick));
@@ -3487,18 +3702,31 @@ function stepChaseFlight(dt) {
         z: beforeDrive.z + (afterDrive.z - beforeDrive.z) * fraction,
       });
     }
+    if (!expired && marker.available > 0) {
+      const notice = autopilot.dropNotice(state.pos);
+      if (notice !== null) {
+        const timing = notice >= 55 ? '約1分後に'
+          : notice > 5 ? '約' + Math.ceil(notice) + '秒後に' : 'まもなく';
+        announceBalloon('こちら気球。' + timing
+          + 'マーカーを投下予定。回収の準備をお願いします。'
+          + '（ゲーム内時間の目安・風や高度で前後します）');
+      }
+    }
     // 離陸直後に落下が終わらないよう、対地10m以上で投下を受け付ける。
     if (!expired && !state.grounded && marker.available > 0
       && state.pos.y - terrain.getHeight(state.pos.x, state.pos.z) >= 10
       && autopilot.shouldDrop(state.pos)) {
       dropMarker();
-      if (marker.state) autopilot.markDropped();
+      if (marker.state) {
+        autopilot.markDropped();
+        announceBalloon('こちら気球。マーカーを投下しました。回収をお願いします。');
+      }
     }
     if (!marker.state && outside(state.pos)) {
       finishChase(null, '気球がプレイ範囲の外へ出たため終了しました');
       break;
     }
-    if (marker.state) {
+    if (marker.state && !marker.state.landed) {
       // 次の落下ステップの水平位置を確かめ、DEM範囲外を海面として採点しない。
       const m = marker.state, mw = windAt(m.pos.y, m.pos.x, m.pos.z);
       const next = {
@@ -3511,6 +3739,7 @@ function stepChaseFlight(dt) {
       }
     }
     stepMarker(tick);
+    checkGroundRecovery();
     stepClock(tick);
     if (!marker.state && state.grounded && state.fuel <= 0) {
       finishChase(null, '気球が燃料切れで接地したため終了しました');
@@ -3530,7 +3759,7 @@ function stepClock(dt) {
     expired = true;
     if (chaseMode) {
       if (!marker.state) finishChase(null, '時間切れ: 気球が投下範囲に到達しませんでした');
-      return; // 投下済みなら着地まで回収を続ける
+      return; // 時間内に投下済みなら、着地後も回収まで続ける（道路加点は締切）
     }
     if (!marker.state) {
       marker.available = 0;
@@ -3674,16 +3903,22 @@ function drawCompass() {
 
 function updateChaseCamera(dt) {
   const c = playerCar.info();
+  if(chaseOverview || Math.abs(c.speedMps)>.05) stoppedCamera?.reset();
+  const hint=document.getElementById('stopped-camera-hint');
+  const stopped = Math.abs(c.speedMps)<=.05;
+  if(stopped && !stoppedHintWasStopped) stoppedHintUntil=performance.now()+5000;
+  stoppedHintWasStopped=stopped;
+  hint.hidden=chaseOverview || targetMapOpen || !stopped || performance.now()>=stoppedHintUntil;
   if (chaseOverview) {
     let top = 0, bottom = 0, right = 0;
     // 開閉後のパネルと常設ボタンを避ける余白。極端に小さい画面でも描画域は残す。
     for (const id of ['instruments', 'chase-readout', 'pibal']) {
       const el = document.getElementById(id);
-      if (el.getClientRects().length) top = Math.max(top, el.getBoundingClientRect().bottom + 12);
+      if (el?.getClientRects().length) top = Math.max(top, el.getBoundingClientRect().bottom + 12);
     }
-    for (const id of ['help', 'credit', 'compass', 'touch-controls', 'chase-actions']) {
+    for (const id of ['help', 'credit', 'compass', 'touch-controls', 'chase-actions', 'ground-wind-report', 'road-radio']) {
       const el = document.getElementById(id);
-      if (el.getClientRects().length) {
+      if (el?.getClientRects().length) {
         const rect = el.getBoundingClientRect();
         if (innerHeight < 500 && rect.left > innerWidth * 0.6) right = Math.max(right, innerWidth - rect.left + 12);
         else bottom = Math.max(bottom, innerHeight - rect.top + 12);
@@ -3693,18 +3928,18 @@ function updateChaseCamera(dt) {
       { id: 'balloon', pos: new THREE.Vector3(state.pos.x, state.pos.y + 18, state.pos.z), radius: 20 },
       { id: 'car', pos: new THREE.Vector3(c.x, c.y + 1, c.z), radius: 3 },
     ];
-    if (marker.state) points.push({ id: 'marker', pos: marker.state.pos, radius: 2 });
+    if (marker.state) points.push({ id: 'marker', pos: marker.state.pos, radius: 2, landed: marker.state.landed });
     overviewController.update(points, dt, {
-      left: 0, right: Math.min(right, innerWidth * 0.4), top: Math.min(top, innerHeight * 0.45), bottom: Math.min(bottom, innerHeight * 0.35),
+      left: 0, right: Math.min(right, innerWidth * 0.4), top: Math.min(top, innerHeight * 0.45), bottom: Math.min(bottom, innerHeight * 0.65),
     });
-  } else {
+  } else if (!stoppedCamera?.active) {
     const head = c.headingDeg * Math.PI / 180;
     const x = c.x - Math.sin(head) * 14, z = c.z + Math.cos(head) * 14;
     camera.position.set(x, Math.max(c.y + 6, terrain.getHeight(x, z) + 3), z);
     if (chaseLookBalloon) camera.lookAt(state.pos.x, state.pos.y + 12, state.pos.z);
     else camera.lookAt(c.x, c.y + 1, c.z);
   }
-  document.getElementById('chase-view').textContent = chaseOverview ? '俯瞰' : chaseLookBalloon ? '気球を見る' : '進行方向';
+  document.getElementById('chase-view').textContent = chaseOverview ? '俯瞰（運転可）' : chaseLookBalloon ? '気球を見る' : '進行方向';
 }
 
 // ---- HUD ----
@@ -3721,6 +3956,63 @@ const hud = {
   target: document.getElementById('target-info'),
   clock: document.getElementById('clock'),
 };
+function groundWindConditions() {
+  const c = playerCar?.info();
+  const active = chaseMode && started && !!c && !chaseFinished && !expired && !chaseWindReported;
+  const distance = c ? Math.hypot(c.x - TARGET_XZ.x, c.z - TARGET_XZ.z) : Infinity;
+  const base = groundWindReportStatus({ active, distance, speedMps: c?.speedMps, targetVisible: false });
+  const visible = base === 'not-visible' && !targetMapOpen && isTargetVisible({
+    camera, target, scene, width: innerWidth, height: innerHeight,
+    screenVisible: (x, y) => document.elementFromPoint(x, y) === renderer.domElement,
+  });
+  return { distance, status: groundWindReportStatus({ active, distance, speedMps: c?.speedMps, targetVisible: visible }) };
+}
+function updateGroundWindReport(force = false) {
+  const panel = document.getElementById('ground-wind-report');
+  if (!chaseMode || !started || !playerCar || chaseFinished) { panel.hidden = true; return; }
+  if (!force && performance.now() - lastWindReportCheck < 250) return;
+  lastWindReportCheck = performance.now();
+  panel.hidden = false;
+  stackBottomLeft();
+  const { distance, status } = groundWindConditions();
+  const messages = {
+    'inactive': '報告の受付時間が終了しました。',
+    'too-close': 'ターゲットに近すぎます。100m以上離れて停車してください。',
+    'moving': 'ターゲットから100m以上離れて停車し、3D画面にターゲットが見えたら、地上風を送信できます。',
+    'not-visible': 'ターゲットが見える向きに画面を合わせてください。',
+    'ready': '送信できます。地上風の報告は1回限り・50点です。',
+  };
+  const message = document.getElementById('ground-wind-status');
+  const displayStatus = distance < TARGET_STANDOFF_M ? 'too-close' : status;
+  if (message.textContent !== messages[displayStatus]) message.textContent = messages[displayStatus];
+  panel.classList.toggle('too-close', distance < TARGET_STANDOFF_M);
+  document.getElementById('ground-wind-distance').textContent = 'ターゲットまで ' + (distance < TARGET_STANDOFF_M ? Math.floor(distance) + 'm' : distText(distance));
+  document.getElementById('ground-wind-send').disabled = status !== 'ready';
+  document.getElementById('ground-wind-send').hidden = chaseWindReported;
+  document.getElementById('ground-wind-send').textContent = '地上風を送信';
+  document.getElementById('chase-wind-score').textContent = (chaseWindReported ? WIND_REPORT_POINTS : 0) + '点';
+  document.getElementById('wind-report-confirmation').hidden = !chaseWindReported;
+  panel.hidden = chaseWindReported && distance >= TARGET_STANDOFF_M;
+  stackBottomLeft();
+}
+function sendGroundWindReport() {
+  if (chaseWindReported) return;
+  // ボタン表示後に移動・視点変更していても、送信時に現在の状態で再判定する。
+  if (groundWindConditions().status !== 'ready') { updateGroundWindReport(true); return; }
+  const w = windAt(terrain.getHeight(TARGET_XZ.x, TARGET_XZ.z), TARGET_XZ.x, TARGET_XZ.z);
+  if (!Number.isFinite(w.dir) || !Number.isFinite(w.kt) || w.kt < 0) return;
+  chaseWindReported = true;
+  const direction = String((Math.round(w.dir) % 360 + 360) % 360).padStart(3, '0');
+  const report = w.kt < 0.05 ? 'ほぼ無風です。' : '風向' + direction + '度から、風速' + w.kt.toFixed(1) + 'ノットです。';
+  announceBalloon('こちら黄色車。ターゲット付近の地上風、' + report
+    + ' 気球：地上風、了解。（報告＋50点）', '黄色車 → 気球');
+  radioOpen = false;
+  if (radioEl) radioEl.style.display = 'none';
+  document.getElementById('ground-wind-send').blur();
+  updateGroundWindReport(true);
+}
+document.getElementById('ground-wind-send').addEventListener('click', sendGroundWindReport);
+
 function updateHud(w) {
   const ground = terrain.getHeight(state.pos.x, state.pos.z);
   hud.altFt.textContent = Math.round(state.pos.y * M2FT);
@@ -3742,8 +4034,9 @@ function updateHud(w) {
     document.getElementById('chase-team').textContent = roadBriefOverride || (!roadReady ? '仲間・道路データを読み込み中'
       : !chaseCar ? '仲間の出発道路を確認中（道路がない場所では配置できません）'
       : `白：気球を追尾 / 青：${!chaseCar2 ? '配置できる道路なし' : chaseCar2.info().arrived ? '到着・待機' : chaseCar2.info().halted ? '待機・経路確認中' : 'ターゲットへ先行'}`);
-    document.getElementById('chase-view').textContent = chaseOverview ? '俯瞰' : chaseLookBalloon ? '気球を見る' : '進行方向';
+    document.getElementById('chase-view').textContent = chaseOverview ? '俯瞰（運転可）' : chaseLookBalloon ? '気球を見る' : '進行方向';
     document.getElementById('chase-phase').textContent = chaseFinished ? '終了'
+      : marker.state?.landed ? '着地済み — 30m以内に近づいて回収（500点）'
       : marker.state ? 'マーカー落下中 — 着地に合わせて待ち受ける'
       : expired ? '時間切れ' : '気球は自動操縦・自動投下';
   }
@@ -3904,6 +4197,7 @@ renderer.setAnimationLoop(() => {
 
   if (chaseMode && playerCar) {
     updateChaseCamera(dt / timeScale);
+    updateGroundWindReport();
     drawCompass();
   }
   if (!chaseMode && !fpv && !carView) controls.update();

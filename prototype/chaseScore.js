@@ -1,14 +1,17 @@
 // 回収レース専用。道路利用をゲーム用の距離として数える（交通法規の判定ではない）。
 export const CATCH_POINTS = 1000;
+export const GROUND_CATCH_POINTS = 500;
+export const WIND_REPORT_POINTS = 50;
 export const ROAD_METERS_PER_POINT = 100;
 const CELL_M = 64;
 // 幅員区分の上限側の半幅 + 中心線の簡略化・位置ずれの許容2m。
 // 19.5m以上は半幅12m、その他/不明は半幅3mを仮置きする。
 const HALF_WIDTH_M = [1.5, 2.75, 6.5, 9.75, 12, 3, 3];
-export function chasePoints(caught, roadMeters) {
+export function chasePoints(caught, roadMeters, afterLanding = false, windReported = false) {
   const road = Math.floor(Math.max(0, roadMeters) / ROAD_METERS_PER_POINT);
-  const recovery = caught ? CATCH_POINTS : 0;
-  return { recovery, road, total: recovery + road };
+  const recovery = caught ? (afterLanding ? GROUND_CATCH_POINTS : CATCH_POINTS) : 0;
+  const windReport = windReported ? WIND_REPORT_POINTS : 0;
+  return { recovery, road, windReport, total: recovery + road + windReport };
 }
 
 export function createRoadMeter(graph) {

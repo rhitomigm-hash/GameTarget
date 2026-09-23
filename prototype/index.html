@@ -143,6 +143,12 @@
   #road-status summary::after { content: ' ▸'; color: #9ecfff; }
   #road-status[open] summary::after { content: ' ▾'; }
   #road-status[open] summary { margin-bottom: 4px; }
+  #ground-wind-report { left: 12px; width: min(350px, calc(100vw - 24px)); box-sizing: border-box; font-size: 12px; line-height: 1.5; }
+  #ground-wind-report[hidden] { display: none; }
+  #ground-wind-report.too-close { border: 2px solid #ff9c63; background: rgba(65, 23, 10, .94); }
+  #ground-wind-distance { color: #ffca5b; font-weight: bold; }
+  #ground-wind-send { min-height: 36px; margin-top: 5px; padding: 5px 12px; border: 1px solid #58758d; border-radius: 6px; background: #1a2a3a; color: #e8f0f6; cursor: pointer; }
+  #ground-wind-send:disabled { opacity: .55; cursor: default; }
   #road-radio { left: 12px; font-size: 12px; line-height: 1.6; max-width: min(70vw, 360px); }
 
   #credit summary {
@@ -199,6 +205,14 @@
   }
   #chase-actions button[aria-pressed="true"] { border-color: #ffca5b; color: #ffca5b; }
   #chase-actions button:disabled { opacity: .5; cursor: default; }
+  #target-map-overlay .b-panel { box-sizing: border-box; width: min(96vw, 654px); padding: 16px; }
+  #target-map-overlay a { color: #9ecfff; }
+  #target-map-overlay .b-title { letter-spacing: 1px; margin-bottom: 8px; }
+  #target-map-canvas { display: block; width: min(100%, 52vh); height: auto; margin: 10px auto; background: #152536; border: 1px solid #58758d; touch-action: none; cursor: grab; }
+  #target-map-toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+  #target-map-toolbar button { min-height: 40px; padding: 7px 12px; background: #1a2a3a; color: #e8f0f6; border: 1px solid #58758d; border-radius: 6px; cursor: pointer; }
+  #target-map-distance { margin: 6px 0; font-weight: bold; color: #ffca5b; }
+  #target-map-status { min-height: 1.5em; }
   #chase-overview-labels { position: fixed; inset: 0; pointer-events: none; }
   .chase-map-label {
     position: absolute; transform: translate(-50%, -100%); padding: 4px 7px;
@@ -223,9 +237,11 @@
 
   /* 幅の狭い画面向けのレイアウト調整(スマホ・小さいウィンドウ共通) */
   @media (max-width: 640px) {
+    #ground-wind-report { width: min(350px, calc(100vw - 80px)); }
     #chase-readout { top: 64px; left: 12px; right: 12px; transform: none; max-width: none; }
-    .chase-mode #credit { bottom: 270px; }
+    .chase-mode #credit { bottom: 318px; }
     #chase-actions { right: 10px; bottom: 220px; }
+    .chase-mode #chase-actions { display: grid; grid-template-columns: auto auto; }
     #chase-actions button { min-height: 38px; font-size: 12px; }
     .chase-mode #pibal { max-width: 45vw; }
     .panel { font-size: 11px; padding: 7px 10px; }
@@ -253,7 +269,7 @@
   #loading .logo { font-size: 40px; font-weight: bold; letter-spacing: 6px; color: #9ecfff; }
   #loading .tagline { font-size: 14px; color: #cdd9e4; margin-bottom: 8px; }
   #loading .p { font-family: Consolas, monospace; color: #9ecfff; }
-  #briefing, #dev-briefing, #areasel, #address-map-overlay, #howto-overlay, #setup-overlay {
+  #briefing, #dev-briefing, #areasel, #address-map-overlay, #howto-overlay, #setup-overlay, #target-map-overlay {
     position: fixed; inset: 0; z-index: 10;
     display: flex; align-items: center; justify-content: center;
     background: rgba(8, 14, 20, 0.9);
@@ -398,13 +414,14 @@
 </details>
 
 <details id="chase-readout" class="panel chase-only" open>
-  <summary>マーカー回収レース · <span id="chase-speed">0</span> km/h</summary>
+  <summary>マーカー回収レース · <span id="chase-speed">0</span> km/h<span id="wind-report-confirmation" hidden> · 地上風＋50点</span></summary>
   <div id="chase-phase">気球は自動操縦・自動投下</div>
   <div>道路走行 <span id="chase-road-score">0点 / 0.00 km</span></div>
+  <div>地上風報告 <span id="chase-wind-score">0点</span>（初回のみ50点）</div>
   <div id="chase-team">仲間・道路データを読み込み中</div>
-  <div class="chase-note">回収成功 1,000点 ＋ 道路100mにつき1点。<br>青＝先行・待機 / 白＝気球追尾（同じチーム）。<br>道路加点は読み込み済みの道路が対象。幅はゲーム用の近似で、交通ルールの判定ではありません。</div>
+  <div class="chase-note">着地時の回収1,000点 / 着地後の回収500点 ＋ 道路100mにつき1点。<br>青＝先行・待機 / 白＝気球追尾（同じチーム）。<br>道路加点は読み込み済みの道路が対象。幅はゲーム用の近似で、交通ルールの判定ではありません。</div>
   <div>気球まで <span id="chase-distance">-- m</span> · 視点: <span id="chase-view">進行方向</span></div>
-  <div class="chase-note">着地の瞬間に車が30m以内なら回収成功。<br>黄色は自由走行（道路・水域・建物の通行制約なし）。<br>コンパス: 水色＝気球 / 桃色＝マーカー / 橙＝ターゲット / 白・青の四角＝仲間</div>
+  <div class="chase-note">着地の瞬間に車が30m以内なら1,000点。着地後も30m以内に近づけば500点で回収。<br>黄色は自由走行（道路・水域・建物の通行制約なし）。<br>コンパス: 水色＝気球 / 桃色＝マーカー / 橙＝ターゲット / 白・青の四角＝仲間</div>
 </details>
 
 <!-- devMode専用の隠しデバッグ表示。Wキーで表示/非表示。気圧配置モデルの計算過程を
@@ -439,8 +456,8 @@
           <tr><th>気球</th><td>自動操縦・自動投下</td></tr>
           <tr><th>仲間</th><td>青は先行・待機、白は気球を追尾</td></tr>
           <tr><th>制限時間</th><td>30分（時間内の投下なら着地まで継続）</td></tr>
-          <tr><th>回収</th><td>着地の瞬間に黄色い車が30m以内</td></tr>
-          <tr><th>得点</th><td>回収1,000点＋道路100mにつき1点（仮設定）</td></tr>
+          <tr><th>回収</th><td>黄色い車が30m以内で回収。着地後も回収できます</td></tr>
+          <tr><th>得点</th><td>着地時1,000点 / 着地後500点＋道路100mにつき1点＋初回の地上風報告50点（仮設定）</td></tr>
         </table>
         <div class="b-sub">パイバル観測データ(編集できます)</div>
         <div class="wind-tools">
@@ -709,7 +726,7 @@
       <b>W/S</b> または <b>↑/↓</b> 前進・後退（逆入力でブレーキ）<br>
       <b>A/D</b> または <b>←/→</b> ハンドル<br>
       <b>V</b> 進行方向 / 気球を見る <b>P</b> パイバル表<br>
-      「俯瞰」ボタン: 全体を見る / 運転に戻る<br>
+      O /「俯瞰」ボタン: 全体を見る / 運転に戻る<br>
       「一時停止」ボタン: 気球・車・マーカー・時間を停止 / 再開<br>
       <b>1-4</b> 時間加速 ×1/×2/×4/×8
     </div>
@@ -739,20 +756,49 @@
   </div>
 </div>
 
+<div id="stopped-camera-hint" hidden style="position:fixed;top:105px;left:50%;transform:translateX(-50%);width:max-content;max-width:90vw;padding:6px 10px;background:#172b39cc;color:white;font-size:12px;pointer-events:none">停車中：ドラッグで周囲を見る・スクロール／ピンチで拡大縮小</div>
 <div id="chase-actions" class="chase-only" aria-label="回収モードの操作">
   <button id="chase-pause-btn" type="button" aria-pressed="false" disabled>一時停止</button>
-  <button id="chase-overview-btn" type="button" aria-pressed="false" disabled>俯瞰</button>
+  <button id="target-map-btn" type="button" aria-haspopup="dialog" aria-controls="target-map-overlay" aria-expanded="false" disabled>ターゲット地図</button>
+  <button id="chase-overview-btn" type="button" aria-pressed="false" aria-keyshortcuts="O" disabled>俯瞰(O)</button>
   <button id="chase-panels-btn" type="button" aria-expanded="false">パネルを開く</button>
+</div>
+
+<div id="ground-wind-report" class="panel chase-only" hidden>
+  <div id="ground-wind-distance">ターゲットまで -- m</div>
+  <div id="ground-wind-status" role="status" aria-live="polite">ターゲットから100m以上離れて停車し、3D画面にターゲットが見えたら、地上風を送信できます。</div>
+  <button id="ground-wind-send" type="button" disabled>地上風を送信</button>
+</div>
+
+<div id="target-map-overlay" role="dialog" aria-modal="true" aria-labelledby="target-map-title" style="display:none">
+  <div class="b-panel">
+    <div class="b-title" id="target-map-title">ターゲット地図</div>
+    <div id="target-map-distance"></div>
+    <div class="mapnote">橙の×：ターゲット ／ 黄色：車の現在地 ／ 北が上。点線の100m円より外で停車。</div>
+    <canvas id="target-map-canvas" width="1280" height="1280" role="img" aria-label="ターゲットと黄色い車の現在位置を示す地図"></canvas>
+    <div id="target-map-toolbar">
+      <button id="target-map-zoom-in" type="button" aria-label="地図を拡大">＋</button>
+      <button id="target-map-zoom-out" type="button" aria-label="地図を縮小">−</button>
+      <button id="target-map-fit" type="button">現在地と目標</button>
+      <button id="target-map-close" type="button">運転に戻る</button>
+    </div>
+    <div class="mapnote" id="target-map-pause-note">地図を表示中は一時停止しています。</div>
+    <div class="mapnote">ドラッグで移動・ホイール／ピンチで拡大縮小。Tキーで開閉、Escで閉じる。</div>
+    <div class="mapnote" id="target-map-status" role="status"></div>
+    <div class="mapnote">地図：<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院 地理院タイル（標準地図）</a></div>
+  </div>
 </div>
 
 <div id="howto-overlay" style="display:none">
   <div class="b-panel howto-panel">
     <div class="b-title">マーカー回収レースの遊び方</div>
-    <p>あなたは黄色い車の運転手です。気球は自動操縦・自動投下。風と気球の動きを読み、マーカーの着地点へ先回りしましょう。</p>
+    <p>あなたは黄色い車の運転手です。気球は自動操縦・自動投下。まず「ターゲット地図」で目標と現在地を確認してターゲットへ向かい、投下予告を受けたら風と気球の動きを読んで着地点へ先回りしましょう。</p>
     <p><b>W/S・↑/↓</b>で前後、<b>A/D・←/→</b>でハンドル。進行方向と逆の入力でブレーキ。スマホは画面の矢印を長押しします。</p>
-    <p><b>V</b>で進行方向／気球を見る、<b>P</b>で風の表。「俯瞰」で全体を確認でき、「一時停止」で落ち着いて考えられます。</p>
-    <p><b>着地の瞬間に黄色い車がマーカーの30m以内</b>なら回収成功。着地後に拾いに行く方式ではありません。</p>
-    <p>回収成功1,000点＋道路走行100mにつき1点。青は目標付近へ先行・待機、白は気球を追尾する同じチームの仲間です。</p>
+    <p><b>V</b>で進行方向／気球を見る、<b>P</b>で風の表。<b>O</b>または「俯瞰」ボタンで全体を見る／運転に戻るを切り替えます。「一時停止」で落ち着いて考えられます。</p>
+    <p>俯瞰でも車を運転できます。「進行方向を見る」「気球を見る」のどちらも停車中は、位置を動かさずドラッグで見回し、ホイール・2本指でズームできます。操作案内は停車時に5秒間表示します。走り始めると通常の運転視点に戻ります。Oキーで運転画面に戻れます。</p>
+    <p>ターゲットから<b>100m以上離れて停車</b>し、3D画面にターゲットが見えたら「地上風を送信」。送信は1回限りで50点です。送信後は無線が自動で閉じます。100m未満では警告が出ます。</p>
+    <p><b>着地の瞬間に黄色い車がマーカーの30m以内</b>なら1,000点。間に合わなくても、着地後に30m以内へ近づけば500点で回収成功です。</p>
+    <p>回収点＋道路走行100mにつき1点＋初回の地上風報告50点。道路加点は着地または時間切れまで。時間内に投下されたマーカーは、時間切れ後も回収できます。青は目標付近へ先行・待機、白は気球を追尾する同じチームの仲間です。</p>
     <div class="howto-note">黄色い車は自由走行です。道路加点は読み込み済み道路でのゲーム用判定です。距離・配点は試作の設定で、交通ルールや実競技の基準ではありません。</div>
     <p><a href="../#controls">操作早見表を読む</a> / <a data-sora-link href="https://rhitomigm-hash.github.io/SORA/prototype/">気球を操縦する（SORA）</a></p>
     <button id="howto-close" type="button" class="howto-close-btn">閉じる</button>

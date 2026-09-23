@@ -154,6 +154,7 @@ export function createPlayerCar({
       y: group.position.y,
       headingDeg: ((car.heading * 180) / Math.PI + 360) % 360,
       speedKmh: Math.round((car.speed * 3600) / 1000),
+      speedMps: car.speed,
     };
   }
 
